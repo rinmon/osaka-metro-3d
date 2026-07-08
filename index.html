@@ -536,8 +536,12 @@
 
     // === 実データ関連 ===
     const USE_REAL_API = true;
-    const PROXY_BASE = '';   // server.py / Vercel を使う場合は '' （相対パス）
-    const DIRECT_API_BASE = 'https://api.mobility-operation-info.emetro-app.osakametro.co.jp/app/api/v1';
+
+    // localhost:8123 (server.py) と Vercel とも同一オリジンの /api/* プロキシを使用
+    function detectApiBase() {
+      return '';
+    }
+    const PROXY_BASE = detectApiBase();
 
     let stationPosMap = {};      // stationCode -> {x, z, name}
 
@@ -563,6 +567,7 @@
     let lastRealFetch = 0;
     let usingRealData = false;
     let fetchErrorCount = 0;
+    let lastFetchError = null; // { kind, detail, failedRoutes, at }
 
     let isPredicting = false;
     let lastFetchTime = 0;
@@ -1132,44 +1137,60 @@
     }
 
     function getApiUrl(routeCode) {
-      // Support PROXY_BASE='' (falsy but means "use relative proxy")
-      const useProxy = (PROXY_BASE != null);
-      if (useProxy) {
-        return `${PROXY_BASE}/api/trainlocation?route_code=${routeCode}`;
-      }
-      return `${DIRECT_API_BASE}/trainlocation?route_code=${routeCode}`;
+      return `${PROXY_BASE}/api/trainlocation?route_code=${encodeURIComponent(routeCode)}`;
+    }
+
+    function classifyFetchError(err, status) {
+      if (status === 503) return { kind: 'config', detail: 'APIキー未設定' };
+      if (status === 502) return { kind: 'proxy', detail: 'プロキシエラー' };
+      if (status === 429) return { kind: 'rate', detail: 'レート制限' };
+      if (status === 403 || status === 401) return { kind: 'auth', detail: '認証エラー' };
+      if (err && err.name === 'TypeError') return { kind: 'network', detail: 'ネットワーク/CORS' };
+      if (typeof status === 'number') return { kind: 'http', detail: `HTTP ${status}` };
+      return { kind: 'unknown', detail: String(err || '不明') };
     }
 
     async function fetchAllRealTrains() {
       if (!USE_REAL_API) return;
 
       const routeMap = ROUTE_CODE_MAP;
+      const activeRoutes = Object.entries(routeMap).filter(([lk]) => activeLines[lk]);
 
-      const promises = Object.entries(routeMap)
-        .filter(([lk]) => activeLines[lk])
-        .map(async ([lineKey, rc]) => {
-          try {
-            const opts = {};
-            const res = await fetch(getApiUrl(rc), opts);
-            if (!res.ok) throw res.status;
-            return { lineKey, data: await res.json() };
-          } catch (e) {
-            return { lineKey, error: e };
+      const promises = activeRoutes.map(async ([lineKey, rc]) => {
+        try {
+          const res = await fetch(getApiUrl(rc));
+          if (!res.ok) {
+            let body = null;
+            try { body = await res.json(); } catch (_) {}
+            return { lineKey, error: classifyFetchError(null, res.status), status: res.status, body };
           }
-        });
+          const data = await res.json();
+          if (data?.error) {
+            return { lineKey, error: classifyFetchError(data.error, res.status), status: res.status, body: data };
+          }
+          return { lineKey, data };
+        } catch (e) {
+          return { lineKey, error: classifyFetchError(e), status: null };
+        }
+      });
 
       const results = await Promise.all(promises);
       realTrains = {};
       let count = 0;
+      const failedRoutes = [];
 
       for (const r of results) {
-        if (r.error || !r.data?.trainLocationList) continue;
+        if (r.error) {
+          failedRoutes.push({ lineKey: r.lineKey, ...r.error });
+          continue;
+        }
+        if (!r.data?.trainLocationList) continue;
         for (const t of r.data.trainLocationList) {
           const vid = t.vehicleNumber || `${r.lineKey}-${count}`;
           realTrains[vid] = {
             lineKey: r.lineKey,
             fromCode: t.fromStationCode || '',
-            toCode: t.toStationCode || '',           // 即時次の駅（方向計算・位置補間に使用）。terminalは別
+            toCode: t.toStationCode || '',
             terminalCode: t.terminalStationCode || t.toStationCode || '',
             progress: parseFloat(t.progress || 0),
             updatedAt: Date.now()
@@ -1178,17 +1199,46 @@
         }
       }
 
+      const allFailed = activeRoutes.length > 0 && failedRoutes.length === activeRoutes.length;
+      const hadPartialSuccess = count > 0;
+
       usingRealData = count > 3;
       lastRealFetch = Date.now();
-      fetchErrorCount = usingRealData ? 0 : fetchErrorCount + 1;
 
-      if (usingRealData && count > 0) {
-        // save snapshot for prediction fallback
+      if (usingRealData) {
+        fetchErrorCount = 0;
+        lastFetchError = null;
         lastKnownRealTrains = JSON.parse(JSON.stringify(realTrains));
         lastFetchTime = Date.now();
         isPredicting = false;
-      } else if (Object.keys(lastKnownRealTrains).length > 0) {
-        isPredicting = true;
+      } else if (allFailed) {
+        fetchErrorCount += 1;
+        const primary = failedRoutes[0] || { kind: 'unknown', detail: '全路線失敗' };
+        lastFetchError = {
+          kind: primary.kind,
+          detail: primary.detail,
+          failedRoutes: failedRoutes.length,
+          at: Date.now()
+        };
+        if (Object.keys(lastKnownRealTrains).length > 0 && fetchErrorCount < 6) {
+          isPredicting = true;
+        } else {
+          isPredicting = false;
+          if (fetchErrorCount >= 3) usingRealData = false;
+        }
+      } else if (hadPartialSuccess) {
+        fetchErrorCount = 0;
+        lastFetchError = null;
+        if (count <= 3 && Object.keys(lastKnownRealTrains).length > 0) {
+          isPredicting = true;
+        }
+      } else {
+        fetchErrorCount += 1;
+        if (Object.keys(lastKnownRealTrains).length > 0 && fetchErrorCount < 6) {
+          isPredicting = true;
+        } else {
+          isPredicting = false;
+        }
       }
 
       updateDataBadge();
@@ -1201,7 +1251,8 @@
 
       if (isPredicting && Object.keys(lastKnownRealTrains).length > 0) {
         const sec = Math.max(1, Math.floor((Date.now() - lastFetchTime) / 1000));
-        textEl.textContent = `API利用不可 - 過去データ予測中 (${sec}s前基準)`;
+        const hint = lastFetchError ? ` (${lastFetchError.detail})` : '';
+        textEl.textContent = `API一時不可 - 過去データ予測中 (${sec}s前)${hint}`;
         badge.style.background = 'rgba(239, 68, 68, 0.2)';
         badge.style.color = '#ef4444';
       } else if (usingRealData && lastRealFetch) {
@@ -1214,8 +1265,19 @@
           help.innerHTML = 'ドラッグで回転　・　スクロールでズーム　・　右ドラッグでパン　・　カーソルキーで上下左右に移動';
           setTimeout(() => { if (help) help.style.opacity = '0.4'; }, 4500);
         }
+      } else if (lastFetchError) {
+        const msgs = {
+          config: 'APIキー未設定（Vercelで OSAKA_METRO_API_KEY を設定）',
+          proxy: 'APIプロキシエラー（502）- デモ表示',
+          rate: 'APIレート制限 - デモ表示',
+          auth: 'API認証エラー - デモ表示',
+          network: 'API接続失敗（CORS/ネットワーク）- デモ表示',
+        };
+        textEl.textContent = msgs[lastFetchError.kind] || `API取得失敗 (${lastFetchError.detail}) - デモ表示`;
+        badge.style.background = 'rgba(245,158,11,.15)';
+        badge.style.color = '#f59e0b';
       } else {
-        textEl.textContent = '実データ取得中（デモ表示）';
+        textEl.textContent = fetchErrorCount > 0 ? '実データ取得中…（デモ表示）' : '実データ取得中（デモ表示）';
         badge.style.background = 'rgba(245,158,11,.15)';
         badge.style.color = '#f59e0b';
       }

@@ -15,12 +15,17 @@ import http.server
 import urllib.request
 import urllib.error
 import json
+import os
 import socketserver
 import time
 from urllib.parse import urlparse, parse_qs
 
 PORT = 8123
-API_KEY = "XSGUG4p5Ya5vQCehV3zZjaDheZAQMpqP9paVan8W"
+# ローカル開発用フォールバック。本番は OSAKA_METRO_API_KEY 環境変数を使用
+API_KEY = os.environ.get(
+    "OSAKA_METRO_API_KEY",
+    "XSGUG4p5Ya5vQCehV3zZjaDheZAQMpqP9paVan8W",
+)
 API_BASE = "https://api.mobility-operation-info.emetro-app.osakametro.co.jp/app/api/v1"
 STATIC_BASE = "https://static.mobility-operation-info.emetro-app.osakametro.co.jp/emetro/cache/common/json"
 

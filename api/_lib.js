@@ -1,6 +1,9 @@
-const API_KEY = process.env.OSAKA_METRO_API_KEY || 'XSGUG4p5Ya5vQCehV3zZjaDheZAQMpqP9paVan8W';
 const API_BASE = 'https://api.mobility-operation-info.emetro-app.osakametro.co.jp/app/api/v1';
 const STATIC_BASE = 'https://static.mobility-operation-info.emetro-app.osakametro.co.jp/emetro/cache/common/json';
+
+function getApiKey() {
+  return process.env.OSAKA_METRO_API_KEY || null;
+}
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -16,4 +19,4 @@ async function proxyJson(res, url, headers = {}) {
   res.end(body);
 }
 
-module.exports = { API_KEY, API_BASE, STATIC_BASE, setCors, proxyJson };
+module.exports = { getApiKey, API_BASE, STATIC_BASE, setCors, proxyJson };
