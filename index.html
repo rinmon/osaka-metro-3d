@@ -417,6 +417,45 @@
           {name: '動物園前', px: 232, py: 360},
           {name: '天下茶屋', px: 215, py: 385}
         ]
+      },
+      'I': {
+        name: '今里筋線',
+        abbr: 'I',
+        color: '#F5A000',
+        headway: 360,
+        traversalSec: 1100,
+        points: [
+          {name: '井高野', px: 458, py: 111},
+          {name: '瑞光四丁目', px: 453, py: 126},
+          {name: 'だいどう豊里', px: 452, py: 140},
+          {name: '太子橋今市', px: 515, py: 138},
+          {name: '清水', px: 517, py: 163},
+          {name: '新森古市', px: 524, py: 181},
+          {name: '関目成育', px: 416, py: 182},
+          {name: '蒲生四丁目', px: 430, py: 202},
+          {name: '鴫野', px: 438, py: 230},
+          {name: '緑橋', px: 418, py: 255},
+          {name: '今里', px: 430, py: 320}
+        ]
+      },
+      'P': {
+        name: 'ニュートラム',
+        abbr: 'P',
+        color: '#00A7E3',
+        headway: 300,
+        traversalSec: 900,
+        points: [
+          {name: 'コスモスクエア', px: 32, py: 319},
+          {name: 'トレードセンター前', px: 75, py: 342},
+          {name: '中ふ頭', px: 60, py: 356},
+          {name: 'ポートタウン西', px: 85, py: 370},
+          {name: 'ポートタウン東', px: 100, py: 383},
+          {name: 'フェリーターミナル', px: 129, py: 408},
+          {name: '南港東', px: 133, py: 426},
+          {name: '南港口', px: 158, py: 444},
+          {name: '平林', px: 193, py: 444},
+          {name: '住之江公園', px: 240, py: 422}
+        ]
       }
     };
 
@@ -427,11 +466,18 @@
       LINES = {};
       Object.keys(LINE_DATA).forEach(key => {
         const d = LINE_DATA[key];
-        const rawPoints = (d.points || []).filter(p => p && typeof p.px === 'number');
-        const worldPoints = rawPoints.map(p => {
-          const w = toWorld(p.px, p.py);
-          return { x: w.x, z: w.z, name: p.name };
-        });
+        const pts = d.points || [];
+        const worldPoints = pts.map(p => {
+          if (!p) return null;
+          if (typeof p.x === 'number' && typeof p.z === 'number') {
+            return { x: p.x, z: p.z, name: p.name, code: p.code };
+          }
+          if (typeof p.px === 'number' && typeof p.py === 'number') {
+            const w = toWorld(p.px, p.py);
+            return { x: w.x, z: w.z, name: p.name, code: p.code };
+          }
+          return null;
+        }).filter(Boolean);
         LINES[key] = { ...d, points: worldPoints };
       });
     }
@@ -482,9 +528,16 @@
           }
         }
 
-        if (Object.keys(built).length >= 7) {
+        if (Object.keys(built).length >= 9) {
           LINE_DATA = built;
           console.log('[Osaka3D] lines built from official API:', Object.keys(built).join(', '));
+        } else if (Object.keys(built).length >= 7) {
+          // 9路線未満でも7路線以上なら API データを優先（I/P 欠落時は rebuild 後にフォールバック補完）
+          LINE_DATA = built;
+          ['I', 'P'].forEach(k => {
+            if (!LINE_DATA[k] && FALLBACK_LINE_DATA[k]) LINE_DATA[k] = FALLBACK_LINE_DATA[k];
+          });
+          console.log('[Osaka3D] lines built from official API (partial):', Object.keys(LINE_DATA).join(', '));
         } else {
           console.warn('[Osaka3D] official line build incomplete, using fallback schematic');
           LINE_DATA = FALLBACK_LINE_DATA;
@@ -537,11 +590,8 @@
     // === 実データ関連 ===
     const USE_REAL_API = true;
 
-    // localhost:8123 (server.py) と Vercel とも同一オリジンの /api/* プロキシを使用
-    function detectApiBase() {
-      return '';
-    }
-    const PROXY_BASE = detectApiBase();
+    // server.py (localhost:8123) も Vercel も apl.chotto.news も同一オリジン相対パスで /api/* にプロキシ
+    const PROXY_BASE = '';
 
     let stationPosMap = {};      // stationCode -> {x, z, name}
 
