@@ -1,0 +1,1919 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>大阪メトロ リアルタイム 3D マップ</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Noto+Sans+JP:wght@400;500;700&amp;display=swap');
+    
+    :root {
+      --accent: #00c8ff;
+    }
+    
+    body {
+      font-family: 'Inter', 'Noto Sans JP', system-ui, sans-serif;
+    }
+    
+    #three-canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: #05070f;
+    }
+    
+    .underground {
+      background: linear-gradient(180deg, #0a0c17 0%, #02040a 100%);
+    }
+
+    .metro-line {
+      transition: opacity 0.2s ease;
+    }
+
+    .train {
+      filter: drop-shadow(0 0 4px currentColor);
+    }
+
+    .stat {
+      font-variant-numeric: tabular-nums;
+    }
+
+    .map-label {
+      font-size: 10px;
+      pointer-events: none;
+      text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+    }
+
+    .hud {
+      backdrop-filter: blur(12px);
+    }
+
+    .section-title {
+      font-size: 10px;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+
+    .line-row {
+      transition: all 0.1s ease;
+    }
+    
+    .line-row:hover {
+      background-color: #111827;
+    }
+
+    .info-popup {
+      position: absolute;
+      background: rgba(17, 24, 39, 0.95);
+      border: 1px solid #374151;
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 12px;
+      pointer-events: none;
+      z-index: 50;
+      box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.3);
+      white-space: nowrap;
+    }
+
+    .station-label {
+      position: absolute;
+      background: rgba(0, 0, 0, 0.65);
+      color: #e5e7eb;
+      font-size: 9px;
+      padding: 1px 5px;
+      border-radius: 2px;
+      white-space: nowrap;
+      pointer-events: none;
+      transform: translate(-50%, -110%);
+      text-shadow: 0 1px 2px rgba(0,0,0,0.9);
+      z-index: 40;
+      border: 1px solid rgba(255,255,255,0.15);
+    }
+
+    .train-label {
+      position: absolute;
+      background: rgba(59, 130, 246, 0.8);
+      color: white;
+      font-size: 8px;
+      padding: 0 3px;
+      border-radius: 2px;
+      white-space: nowrap;
+      pointer-events: none;
+      transform: translate(-50%, -130%);
+      text-shadow: 0 1px 1px rgba(0,0,0,0.8);
+      z-index: 45;
+      font-family: monospace;
+    }
+  </style>
+</head>
+<body class="bg-[#05070f] text-white overflow-hidden">
+  <!-- Header -->
+  <div class="border-b border-white/10 bg-[#05070f]/95 px-4 py-2 flex items-center justify-between z-40 relative">
+    <div class="flex items-center gap-x-3">
+      <div class="flex items-center gap-x-2">
+        <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-[#00c8ff] to-[#0066cc] flex items-center justify-center">
+          <span class="text-white text-lg font-bold tracking-tighter">M</span>
+        </div>
+        <div>
+          <div class="font-semibold tracking-tight text-lg">大阪メトロ 3D <span style="font-size:9px;opacity:0.5">v1.1.0</span></div>
+          <div class="text-[10px] text-white/50 -mt-0.5">REAL-TIME UNDERGROUND MAP</div>
+        </div>
+      </div>
+      <div id="data-badge" class="px-2.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 text-xs font-medium flex items-center gap-x-1">
+        <div class="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse"></div>
+        <span id="data-badge-text">実運行データ</span>
+      </div>
+    </div>
+    
+    <div class="flex items-center gap-x-2 text-xs">
+      <div class="px-3 py-1 bg-white/5 rounded text-white/70">
+        地下鉄8路線 + ニュートラム
+      </div>
+      <div onclick="showAbout()" class="px-2.5 py-1 text-white/60 hover:text-white hover:bg-white/5 rounded cursor-pointer transition-colors">について</div>
+    </div>
+  </div>
+
+  <div class="flex h-[calc(100vh-41px)]">
+    <!-- 3D Canvas -->
+    <div class="flex-1 relative overflow-hidden" id="canvas-container">
+      <canvas id="three-canvas" class="w-full h-full"></canvas>
+      <div id="station-labels"></div>
+      <div id="train-labels"></div>
+      <div id="api-predict-notice" 
+           class="absolute top-14 left-3 hidden px-3 py-1 bg-red-600/80 text-white text-[10px] rounded hud border border-red-400/50">
+        API利用不可 — 過去の運行データから位置を予測中
+      </div>
+      
+      <!-- HUD Overlays -->
+      <div class="absolute top-3 left-3 bg-black/70 hud border border-white/10 rounded-lg px-3 py-2 text-sm">
+        <div class="flex items-baseline gap-x-2">
+          <span class="text-white/60 text-xs">現在時刻</span>
+          <span id="sim-time" class="font-mono text-xl font-semibold tabular-nums tracking-tighter">--:--:--</span>
+        </div>
+        <div id="speed-indicator" class="text-[10px] text-emerald-400 font-medium">LIVE REAL DATA</div>
+      </div>
+
+      <div class="absolute top-3 right-3 bg-black/70 hud border border-white/10 rounded-lg px-3 py-2 text-xs">
+        <div class="flex items-center gap-x-4">
+          <div>
+            <span class="text-white/60">運行中列車</span>
+            <span id="train-count" class="ml-1 font-semibold text-[#00c8ff]">42</span>
+          </div>
+          <div class="text-white/40">|</div>
+          <div class="text-emerald-400 text-[10px]">LIVE DATA</div>
+        </div>
+      </div>
+
+      <!-- Instructions / Status -->
+      <div id="canvas-help" class="absolute bottom-4 left-1/2 -translate-x-1/2 bg-black/75 hud border border-white/10 rounded-lg px-4 py-2 text-xs text-white/80 text-center">
+        ドラッグで回転　・　スクロールでズーム　・　右ドラッグでパン　・　カーソルキーで上下左右に移動<br>
+        <span class="text-emerald-400">実運行データ取得中...</span> 全路線を表示しています
+      </div>
+
+      <div id="info-popup" class="info-popup hidden"></div>
+    </div>
+
+    <!-- Sidebar Controls -->
+    <div class="w-72 border-l border-white/10 bg-[#0a0c17] flex flex-col">
+      <!-- Time Controls (speed multipliers removed as not in use) -->
+      <div class="p-4 border-b border-white/10">
+        <div class="section-title text-white/60 mb-2">時間制御</div>
+
+        <div class="flex gap-2">
+          <button onclick="togglePause()" id="btn-pause"
+                  class="flex-1 flex items-center justify-center gap-x-1.5 bg-white/10 hover:bg-white/15 px-3 py-1.5 text-sm rounded transition-colors">
+            <span id="pause-icon">⏸</span>
+            <span id="pause-text">一時停止</span>
+          </button>
+          <button onclick="resetSimulation()" 
+                  class="px-3 py-1.5 text-sm bg-white/10 hover:bg-white/15 rounded transition-colors">リセット</button>
+        </div>
+      </div>
+
+      <!-- Lines -->
+      <div class="p-4 border-b border-white/10 flex-1 overflow-auto">
+        <div class="section-title text-white/60 mb-2.5 flex items-center justify-between">
+          <span>路線表示（全表示中）</span>
+          <button onclick="toggleAllLines(true)" class="text-[10px] underline text-emerald-400 hover:text-white">すべてオン</button>
+        </div>
+
+        <div id="line-controls" class="space-y-1 text-sm"></div>
+      </div>
+
+      <!-- 列車クリックで画面右に表示するウィジェット（時刻表など）。路線選択の下あたりに表示 -->
+      <div id="selected-train-panel" class="hidden mx-4 mb-2 p-2.5 bg-black/50 border border-white/10 rounded text-xs">
+        <div class="flex items-center justify-between mb-1">
+          <span class="font-semibold text-[#00c8ff]">選択中の列車</span>
+          <button onclick="clearSelectedTrain()" class="text-white/60 hover:text-white px-1">×</button>
+        </div>
+        <div id="selected-train-body" class="space-y-1"></div>
+        <div class="mt-2 pt-2 border-t border-white/10">
+          <div class="text-[10px] text-white/50 mb-0.5">次の停車駅（予想）</div>
+          <div id="selected-train-timetable" class="text-[11px] leading-tight space-y-px"></div>
+        </div>
+      </div>
+
+      <!-- Camera + Info -->
+      <div class="p-4 border-t border-white/10 bg-[#05070f]">
+        <div class="section-title text-white/60 mb-2">カメラ</div>
+        <div class="grid grid-cols-3 gap-1.5 text-xs mb-3">
+          <button onclick="setCameraView('top')" class="py-1 bg-white/5 hover:bg-white/10 active:bg-white/15 rounded">真上</button>
+          <button onclick="setCameraView('oblique')" class="py-1 bg-white/5 hover:bg-white/10 active:bg-white/15 rounded">斜め</button>
+          <button onclick="setCameraView('side')" class="py-1 bg-white/5 hover:bg-white/10 active:bg-white/15 rounded">側面</button>
+        </div>
+
+        <div class="text-[10px] text-white/50 leading-tight">
+          大阪メトロ公式APIの実運行データを約10秒ごとに更新して表示します。<br>
+          API障害時は直近データから位置を予測、またはデモ表示に切り替わります。
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // グローバルエラーハンドラ：黒画面の原因を画面に表示する
+    window.addEventListener('error', function(e) {
+      const banner = document.createElement('div');
+      banner.style.cssText = 'position:fixed;top:60px;left:10px;right:10px;background:#b91c1c;color:white;padding:10px 14px;z-index:99999;font-size:13px;border-radius:6px;white-space:pre-wrap';
+      banner.innerHTML = '<strong>JS ERROR (これを教えてください):</strong><br>' + (e.message || e) + '<br>at ' + (e.filename || 'unknown') + ':' + (e.lineno || '?');
+      document.body.appendChild(banner);
+      console.error('Caught error:', e);
+    });
+
+    // Tailwind script
+    function initTailwind() {
+      document.documentElement.style.setProperty('--accent', '#00c8ff');
+    }
+
+    // ==================== DATA ====================
+    // Using schematic coords from Osaka Metro app (pixel-like). Scaled and shifted for 3D.
+    const SCALE = 0.085;
+    const OFFSET_X = -22;
+    const OFFSET_Z = -22;
+
+    function toWorld(px, py) {
+      return {
+        x: (px - 280) * SCALE + OFFSET_X,
+        z: (py - 255) * SCALE + OFFSET_Z
+      };
+    }
+
+    // Line definitions — API構築失敗時のフォールバック用 schematic
+    const FALLBACK_LINE_DATA = {
+      'M': {
+        name: '御堂筋線',
+        abbr: 'M',
+        color: '#DC2715',
+        headway: 240,          // seconds between trains
+        traversalSec: 1350,    // approx time to traverse full line
+        points: [
+          {name: '江坂', px: 230, py: 81},
+          {name: '新大阪', px: 227, py: 121},
+          {name: '西中島南方', px: 222, py: 140},
+          {name: '中津', px: 205, py: 165},
+          {name: '梅田', px: 195, py: 192},
+          {name: '淀屋橋', px: 192, py: 218},
+          {name: '本町', px: 198, py: 243},
+          {name: '心斎橋', px: 235, py: 277},
+          {name: 'なんば', px: 222, py: 312},
+          {name: '大国町', px: 212, py: 338},
+          {name: '動物園前', px: 232, py: 360},
+          {name: '天王寺', px: 255, py: 375},
+          {name: '昭和町', px: 290, py: 390},
+          {name: '西田辺', px: 330, py: 402},
+          {name: '長居', px: 370, py: 412},
+          {name: 'あびこ', px: 428, py: 426},
+          {name: '新金岡', px: 453, py: 450},
+          {name: 'なかもず', px: 460, py: 465}
+        ]
+      },
+      'T': {
+        name: '谷町線',
+        abbr: 'T',
+        color: '#AB1C87',
+        headway: 300,
+        traversalSec: 1500,
+        points: [
+          {name: '大日', px: 550, py: 103},
+          {name: '守口', px: 540, py: 120},
+          {name: '太子橋今市', px: 515, py: 138},
+          {name: '千林大宮', px: 483, py: 160},
+          {name: '関目高殿', px: 445, py: 163},
+          {name: '野江内代', px: 415, py: 178},
+          {name: '東梅田', px: 285, py: 195},
+          {name: '南森町', px: 270, py: 215},
+          {name: '天満橋', px: 285, py: 235},
+          {name: '谷町四丁目', px: 295, py: 260},
+          {name: '谷町九丁目', px: 348, py: 310},
+          {name: '四天王寺前夕陽ヶ丘', px: 365, py: 335},
+          {name: '阿倍野', px: 348, py: 385},
+          {name: '文の里', px: 365, py: 400},
+          {name: '喜連瓜破', px: 535, py: 418},
+          {name: '出戸', px: 552, py: 432}
+        ]
+      },
+      'Y': {
+        name: '四つ橋線',
+        abbr: 'Y',
+        color: '#0074BE',
+        headway: 360,
+        traversalSec: 920,
+        points: [
+          {name: '西梅田', px: 199, py: 194},
+          {name: '肥後橋', px: 175, py: 220},
+          {name: '本町', px: 185, py: 245},
+          {name: '四ツ橋', px: 195, py: 300},
+          {name: 'なんば', px: 222, py: 312},
+          {name: '大国町', px: 212, py: 338},
+          {name: '花園町', px: 205, py: 353},
+          {name: '岸里', px: 210, py: 369},
+          {name: '玉出', px: 211, py: 385},
+          {name: '住之江公園', px: 240, py: 422}
+        ]
+      },
+      'C': {
+        name: '中央線',
+        abbr: 'C',
+        color: '#00A63D',
+        headway: 300,
+        traversalSec: 1400,
+        points: [
+          {name: '夢洲', px: 25, py: 281},
+          {name: 'コスモスクエア', px: 32, py: 319},
+          {name: '大阪港', px: 56, py: 298},
+          {name: '朝潮橋', px: 70, py: 284},
+          {name: '九条', px: 122, py: 253},
+          {name: '阿波座', px: 161, py: 252},
+          {name: '堺筋本町', px: 282, py: 250},
+          {name: '森ノ宮', px: 392, py: 253},
+          {name: '緑橋', px: 418, py: 255},
+          {name: '深江橋', px: 454, py: 262},
+          {name: '高井田', px: 477, py: 262},
+          {name: '長田', px: 505, py: 262},
+          {name: '荒本', px: 530, py: 262},
+          {name: '永和', px: 555, py: 262}
+        ]
+      },
+      'S': {
+        name: '千日前線',
+        abbr: 'S',
+        color: '#EC75A9',
+        headway: 420,
+        traversalSec: 860,
+        points: [
+          {name: '野田阪神', px: 115, py: 195},
+          {name: '玉川', px: 152, py: 226},
+          {name: '西長堀', px: 140, py: 278},
+          {name: '桜川', px: 152, py: 319},
+          {name: 'なんば', px: 222, py: 312},
+          {name: '日本橋', px: 255, py: 310},
+          {name: '谷町九丁目', px: 348, py: 310},
+          {name: '鶴橋', px: 372, py: 322},
+          {name: '今里', px: 430, py: 320},
+          {name: '新深江', px: 485, py: 316},
+          {name: '小路', px: 520, py: 327},
+          {name: '北巽', px: 540, py: 335}
+        ]
+      },
+      'N': {
+        name: '長堀鶴見緑地線',
+        abbr: 'N',
+        color: '#BCD400',
+        headway: 360,
+        traversalSec: 1100,
+        points: [
+          {name: '大正', px: 105, py: 320},
+          {name: 'ドーム前千代崎', px: 112, py: 301},
+          {name: '西長堀', px: 140, py: 278},
+          {name: '心斎橋', px: 235, py: 277},
+          {name: '松屋町', px: 315, py: 283},
+          {name: '谷町六丁目', px: 335, py: 275},
+          {name: '玉造', px: 400, py: 287},
+          {name: '森ノ宮', px: 392, py: 253},
+          {name: '大阪ビジネスパーク', px: 375, py: 222},
+          {name: '京橋', px: 385, py: 202},
+          {name: '蒲生四丁目', px: 430, py: 202},
+          {name: '今福鶴見', px: 500, py: 205},
+          {name: '横堤', px: 535, py: 205},
+          {name: '門真南', px: 575, py: 210}
+        ]
+      },
+      'K': {
+        name: '堺筋線',
+        abbr: 'K',
+        color: '#B34422',
+        headway: 420,
+        traversalSec: 780,
+        points: [
+          {name: '天神橋筋六丁目', px: 285, py: 160},
+          {name: '扇町', px: 300, py: 182},
+          {name: '南森町', px: 270, py: 215},
+          {name: '北浜', px: 260, py: 230},
+          {name: '堺筋本町', px: 282, py: 250},
+          {name: '長堀橋', px: 270, py: 272},
+          {name: '恵美須町', px: 295, py: 340},
+          {name: '動物園前', px: 232, py: 360},
+          {name: '天下茶屋', px: 215, py: 385}
+        ]
+      }
+    };
+
+    let LINE_DATA = FALLBACK_LINE_DATA;
+    let LINES = {};
+
+    function rebuildLinesFromData() {
+      LINES = {};
+      Object.keys(LINE_DATA).forEach(key => {
+        const d = LINE_DATA[key];
+        const rawPoints = (d.points || []).filter(p => p && typeof p.px === 'number');
+        const worldPoints = rawPoints.map(p => {
+          const w = toWorld(p.px, p.py);
+          return { x: w.x, z: w.z, name: p.name };
+        });
+        LINES[key] = { ...d, points: worldPoints };
+      });
+    }
+
+    // 公式 routeStation + stationCoords から路線データを構築
+    const ROUTE_CODE_MAP = { M:'1', T:'2', Y:'3', C:'4', S:'5', K:'6', N:'7', I:'8', P:'9' };
+    const ROUTE_ABBR_FROM_META = { A: 'K' }; // route.json の堺筋線略称
+
+    async function buildLinesFromOfficialData() {
+      try {
+        const [rsRes, routeRes] = await Promise.all([
+          fetch(`${PROXY_BASE}/api/routeStation`),
+          fetch(`${PROXY_BASE}/api/route`)
+        ]);
+        if (!rsRes.ok || !routeRes.ok) throw new Error('route API failed');
+        const rsData = await rsRes.json();
+        const routeData = await routeRes.json();
+        const routeMeta = {};
+        (routeData.routeList || []).forEach(r => {
+          const abbr = ROUTE_ABBR_FROM_META[r.routeAbbreviation] || r.routeAbbreviation;
+          routeMeta[r.routeCode] = { abbr, color: r.routeColor, name: r.routeName };
+        });
+
+        const built = {};
+        for (const rs of (rsData.routeStationList || [])) {
+          const meta = routeMeta[rs.routeCode];
+          if (!meta) continue;
+          const lineKey = meta.abbr;
+          const points = [];
+          for (const st of (rs.stationList || [])) {
+            const code = (st.stationNo || '').split(',')[0].trim();
+            const pos = stationPosMap[code];
+            if (pos && typeof pos.x === 'number') {
+              points.push({ x: pos.x, z: pos.z, name: st.stationName, code });
+            }
+          }
+          // 有効座標が2点以上ある路線のみ採用
+          const valid = points.filter(p => p.x !== 0 || p.z !== 0);
+          if (valid.length >= 2) {
+            built[lineKey] = {
+              name: rs.routeName || meta.name,
+              abbr: lineKey,
+              color: meta.color || '#888888',
+              headway: 300,
+              traversalSec: Math.max(600, valid.length * 90),
+              points: valid
+            };
+          }
+        }
+
+        if (Object.keys(built).length >= 7) {
+          LINE_DATA = built;
+          console.log('[Osaka3D] lines built from official API:', Object.keys(built).join(', '));
+        } else {
+          console.warn('[Osaka3D] official line build incomplete, using fallback schematic');
+          LINE_DATA = FALLBACK_LINE_DATA;
+        }
+      } catch (e) {
+        console.warn('[Osaka3D] buildLinesFromOfficialData failed, fallback schematic', e);
+        LINE_DATA = FALLBACK_LINE_DATA;
+      }
+      rebuildLinesFromData();
+      Object.keys(LINES).forEach(k => { if (activeLines[k] === undefined) activeLines[k] = true; });
+    }
+
+    // 位置注入は loadStationCoords 内で成功/失敗両方で呼ばれる
+
+    // 路線ごとの高低（地下の深さ）。現実味を出すための簡易設定
+    // 注意: これは本物の測量標高データではなく、視覚的な高低差を強調するための芸術的な値です。
+    // 実際の大阪メトロの駅深度は様々ですが、ここでは見やすくするために大胆にスケールしています。
+    // 高低差がまだ小さいと感じる場合は DEPTH_SCALE を 8.0 や 10.0 などに上げてください。
+    const DEPTH_SCALE = 6.0;  // 高低差をより強調（現実の深さ差を視覚的に誇張）。現実のデータではないので大胆にスケールしています。
+    const LINE_DEPTH = {
+      'M': -2.2 * DEPTH_SCALE,  // 御堂筋線 やや深め
+      'T': -1.6 * DEPTH_SCALE,
+      'Y': -1.3 * DEPTH_SCALE,
+      'C': -1.9 * DEPTH_SCALE,
+      'S': -1.1 * DEPTH_SCALE,
+      'N': -1.5 * DEPTH_SCALE,
+      'K': -1.8 * DEPTH_SCALE,
+      'I': -1.4 * DEPTH_SCALE,
+      'P': -0.9 * DEPTH_SCALE   // ニュートラム 浅め
+    };
+
+    const TRACK_RADIUS = 0.08;  // 線路の太さ（細くして現実的に）
+    const TRAIN_Y_OFFSET = TRACK_RADIUS + 0.05;  // 電車が線路の上に収まる高さ（低めに）
+
+    // ==================== THREE.JS SETUP ====================
+    let scene, camera, renderer;
+    let raycaster, mouse;
+    let lineMeshes = {};
+    let stationMeshes = [];
+    let trainMeshes = [];
+    let stationLabels = []; // {div, position: THREE.Vector3} for HTML labels
+    let trainLabels = [];   // {div, vehicleNumber} for train names
+    // ground は削除済み（ユーザー要望）
+
+    let simTime = 7 * 3600;
+    let simSpeed = 1.0;  // 速度倍率機能は未使用のため固定1.0
+    let isPaused = false;
+    let lastFrameTime = Date.now();
+
+    // === 実データ関連 ===
+    const USE_REAL_API = true;
+    const PROXY_BASE = '';   // server.py / Vercel を使う場合は '' （相対パス）
+    const DIRECT_API_BASE = 'https://api.mobility-operation-info.emetro-app.osakametro.co.jp/app/api/v1';
+
+    let stationPosMap = {};      // stationCode -> {x, z, name}
+
+    // 他社線直通など schematic に無いコード → 路線上の代表駅へフォールバック
+    const STATION_ALIASES = {
+      HK95: { lineKey: 'K', name: '天下茶屋', fallbackCode: 'K20' },
+      HK72: { lineKey: 'K', name: '天下茶屋', fallbackCode: 'K20' }
+    };
+
+    // 列車APIのvehicle locationで使われる一部コードが stationCoords.json に無いため補完
+    // 実車番表示 + 発着表示を正しくするためのフォールバック（名前解決のみ）
+    const STATION_NAME_FIX = {
+      'M06': '江坂',
+      'M07': '新大阪',
+      'M09': '西中島南方',
+      'M10': '中津'
+      // 必要に応じて追加。Mxx の多くは stationCoords で解決済み
+    };
+
+    // APIが返す stationCode → 日本語駅名（API構築前の最小フォールバック）
+    const STATION_CODE_NAME = {};
+    let realTrains = {};         // vehicleNumber -> {lineKey, fromCode, toCode, terminalCode, progress, updatedAt}  // 実際の車番使用
+    let lastRealFetch = 0;
+    let usingRealData = false;
+    let fetchErrorCount = 0;
+
+    let isPredicting = false;
+    let lastFetchTime = 0;
+    let lastKnownRealTrains = {}; // last successful real data for prediction
+
+    let activeLines = {};
+
+    let hoverInfo = null;
+
+    // キーボード状態（カーソルキーでパン）
+    const keys = {};
+
+    function createLineMesh(lineKey, line) {
+      if (!line || !line.points) {
+        console.warn('[createLineMesh] bad line data for', lineKey, line);
+        const g = new THREE.Group();
+        return { group: g, curve: null, points: [] };
+      }
+      const depth = LINE_DEPTH[lineKey] || (-1.5 * DEPTH_SCALE);
+      const safePoints = (line.points || []).filter(p => p && typeof p.x === 'number' && typeof p.z === 'number');
+      const points = safePoints.map(p => {
+        if (!p || typeof p.x !== 'number' || typeof p.z !== 'number') {
+          return new THREE.Vector3(0, depth, 0);
+        }
+        return new THREE.Vector3(p.x, depth, p.z);
+      });
+
+      const lineMat = new THREE.LineBasicMaterial({ color: line.color, transparent: true, opacity: 0.9 });
+
+      const group = new THREE.Group();
+      // 駅と駅を結ぶ線をベクトル線（Line）に。4ポイントくらいでセグメント
+      for (let i = 0; i < points.length - 1; i++) {
+        const p1 = points[i];
+        const p2 = points[i + 1];
+
+        // 2点から4ポイントのベクトル線を作成（直線を3分割）
+        const dir = p2.clone().sub(p1);
+        const pA = p1.clone();
+        const pB = p1.clone().add(dir.clone().multiplyScalar(1 / 3));
+        const pC = p1.clone().add(dir.clone().multiplyScalar(2 / 3));
+        const pD = p2.clone();
+        const segPoints = [pA, pB, pC, pD];
+
+        const lineGeo = new THREE.BufferGeometry().setFromPoints(segPoints);
+        const line = new THREE.Line(lineGeo, lineMat);
+        line.userData = { type: 'track', lineKey, segment: i };
+        group.add(line);
+      }
+
+      group.visible = activeLines[lineKey];
+      scene.add(group);
+
+      return { group, curve: null, points: line.points };
+    }
+
+    function createStations() {
+      stationMeshes = [];
+      const seen = new Set();
+
+      Object.keys(LINES).forEach(key => {
+        try {
+          const line = LINES[key];
+          if (!line || !Array.isArray(line.points)) {
+            console.warn('[createStations] bad line for key', key, line);
+            return;
+          }
+          const safePts = (line.points || []).filter(p => p && typeof p.x === 'number' && typeof p.z === 'number');
+          safePts.forEach((pt, idx) => {
+            if (!pt) return;
+            const keyId = pt.name;
+            if (seen.has(keyId)) return; // avoid heavy dupes
+            seen.add(keyId);
+
+            // 簡略化した駅マーカー（円柱をボックスに）
+            const depth = LINE_DEPTH[key] || (-1.5 * DEPTH_SCALE);
+            const stationY = depth;  // 線と同じ高さに置いて接続（浮かないように）
+            const marker = new THREE.Mesh(
+              new THREE.BoxGeometry(0.7, 0.25, 0.7),
+              new THREE.MeshPhongMaterial({
+                color: 0x334155,
+                emissive: 0x1e2937,
+                emissiveIntensity: 0.3
+              })
+            );
+            marker.position.set(pt.x, stationY, pt.z);
+            marker.userData = { type: 'station', name: pt.name, lines: [key] };
+            scene.add(marker);
+            stationMeshes.push(marker);
+
+            // 簡略化したトップマーカー（小さいボックスでラインカラー）
+            const topMarker = new THREE.Mesh(
+              new THREE.BoxGeometry(0.5, 0.12, 0.5),
+              new THREE.MeshPhongMaterial({ 
+                color: line.color, 
+                emissive: line.color, 
+                emissiveIntensity: 0.4 
+              })
+            );
+            topMarker.position.set(pt.x, stationY + 0.3, pt.z);
+            topMarker.userData = { type: 'stationTop' };
+            scene.add(topMarker);
+
+            // 駅名ラベル（HTML overlayで浮き出し表示）
+            const labelsContainer = document.getElementById('station-labels');
+            if (labelsContainer) {
+              const labelDiv = document.createElement('div');
+              labelDiv.className = 'station-label';
+              labelDiv.textContent = pt.name;
+              labelsContainer.appendChild(labelDiv);
+              stationLabels.push({
+                div: labelDiv,
+                position: new THREE.Vector3(pt.x, stationY + 1.2, pt.z)  // 駅の上に浮き出させる
+              });
+            }
+          });
+        } catch (e) {
+          console.error('[createStations] failed for key', key, e);
+        }
+      });
+    }
+
+    function createSingleTrainMesh() {
+      const body = new THREE.Mesh(
+        new THREE.BoxGeometry(0.5, 0.35, 1.0),
+        new THREE.MeshPhongMaterial({ color: 0x334155, emissive: 0x1e2937 })
+      );
+      body.position.y = -0.05;
+
+      const front = new THREE.Mesh(
+        new THREE.BoxGeometry(0.55, 0.3, 0.2),
+        new THREE.MeshPhongMaterial({ color: 0x3b82f6, emissive: 0x1e40af })
+      );
+      front.position.z = -0.7;
+      front.position.y = -0.05;
+      body.add(front);
+
+      const trainGroup = new THREE.Group();
+      trainGroup.add(body);
+      trainGroup.visible = false;
+      trainGroup.userData = {
+        type: 'train', lineKey: null, dir: 1, progress: 0, vehicleNumber: null
+      };
+      scene.add(trainGroup);
+      trainMeshes.push(trainGroup);
+      return trainGroup;
+    }
+
+    function ensureTrainMeshCapacity(needed) {
+      while (trainMeshes.length < needed) {
+        createSingleTrainMesh();
+      }
+    }
+
+    function createTrains() {
+      trainMeshes = [];
+      for (let i = 0; i < 120; i++) createSingleTrainMesh();
+    }
+
+    function seedDemoTrains() {
+      // 起動時に画面が真っ黒にならないよう、全路線の列車を仮配置
+      const lineKeys = Object.keys(LINES);
+      trainMeshes.forEach((train, i) => {
+        const lk = lineKeys[i % lineKeys.length];
+        train.userData.lineKey = lk;
+        train.userData.vehicleNumber = 'demo-' + i;
+        train.userData.fromName = 'デモ';
+        train.userData.toName = '';
+        train.userData.lineName = LINES[lk]?.name || lk;
+
+        const line = LINES[lk];
+        const pts = line.points;
+        if (pts && pts.length > 1) {
+          // 適当に分散配置
+          const prog = ((i * 0.19) % 1);
+          let pos = getPositionOnLine(lk, prog) || {x: 0, y: -1.5 * DEPTH_SCALE, z: 0};
+          if (!pos || typeof pos.x !== 'number') pos = {x: 0, y: -1.5 * DEPTH_SCALE, z: 0};
+          const trackY = pos.y || -1.5;
+          train.position.x = pos.x || 0;
+          train.position.y = trackY + TRAIN_Y_OFFSET;  // 線路上に置く
+          train.position.z = pos.z || 0;
+          train.userData.baseY = trackY + TRAIN_Y_OFFSET;
+
+          // 向き
+          let next = getPositionOnLine(lk, Math.min(0.99, prog + 0.03)) || {x: 0, z: 0};
+          if (!next || typeof next.x !== 'number') next = {x: 0, z: 0};
+          const dx = (next.x || 0) - (pos.x || 0);
+          const dz = (next.z || 0) - (pos.z || 0);
+          // Model front is at negative local Z, so add PI to point nose in travel direction
+          train.rotation.y = Math.atan2(dx, dz) + Math.PI;
+        }
+        train.visible = true;
+      });
+
+      // 初期の運行中列車数を埋める
+      updateVisibleTrainCount();
+    }
+
+    function initThree() {
+      const canvas = document.getElementById('three-canvas');
+      renderer = new THREE.WebGLRenderer({ 
+        canvas, 
+        antialias: true, 
+        alpha: false,
+        powerPreference: 'high-performance'
+      });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+
+      scene = new THREE.Scene();
+      scene.fog = new THREE.Fog(0x05070f, 45, 165);
+
+      camera = new THREE.PerspectiveCamera(52, canvas.clientWidth / canvas.clientHeight, 0.5, 300);
+
+      // カメラ初期位置：大阪メトロの模式図エリアを中心に
+      viewCenter.set(-5, 0, -2);
+      camera.position.set(-5, 25, 22);
+      camera.lookAt(viewCenter.x, viewCenter.y, viewCenter.z);
+
+      // Lights
+      const hemi = new THREE.HemisphereLight(0x334455, 0x05070a, 0.6);
+      scene.add(hemi);
+
+      const dir = new THREE.DirectionalLight(0xccddee, 0.8);
+      dir.position.set(25, 65, -20);
+      scene.add(dir);
+
+      const dir2 = new THREE.DirectionalLight(0x334466, 0.35);
+      dir2.position.set(-40, 30, 35);
+      scene.add(dir2);
+
+      // 地面なし（ユーザーリクエスト）。地下鉄らしい浮遊感を出す。
+
+      // North arrow indicator
+      const arrow = new THREE.Group();
+      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.25, 5.5, 4), new THREE.MeshPhongMaterial({color: 0x475569}));
+      shaft.rotation.x = Math.PI / 2;
+      shaft.position.z = -3.8;
+      arrow.add(shaft);
+      const head = new THREE.Mesh(new THREE.ConeGeometry(0.85, 2.2, 4), new THREE.MeshPhongMaterial({color: 0x64748b}));
+      head.rotation.x = -Math.PI / 2;
+      head.position.z = -7.2;
+      arrow.add(head);
+      arrow.position.set(49, 2, -42);
+      scene.add(arrow);
+
+      // Build lines
+      try {
+        Object.keys(LINES).forEach(key => {
+          try {
+            const meshData = createLineMesh(key, LINES[key]);
+            lineMeshes[key] = meshData;
+            // デフォルトで全路線を表示
+            activeLines[key] = true;
+            if (meshData.group) meshData.group.visible = true;
+          } catch (e) {
+            console.error('[createLineMesh] failed for key', key, e);
+          }
+        });
+      } catch (e) {
+        console.error('[createLineMeshes] failed', e);
+        throw new Error('in createLineMeshes: ' + (e && e.message || e));
+      }
+
+      try {
+        createStations();
+      } catch (e) {
+        console.error('[createStations] failed', e);
+        throw new Error('in createStations: ' + (e && e.message || e));
+      }
+
+      try {
+        createTrains();
+      } catch (e) {
+        console.error('[createTrains] failed', e);
+        throw new Error('in createTrains: ' + (e && e.message || e));
+      }
+
+      // 起動直後から何か見えるように、最初にデモ用の列車を全路線にばらまく
+      try {
+        seedDemoTrains();
+      } catch (e) {
+        console.error('[seedDemoTrains] failed', e);
+        throw new Error('in seedDemoTrains: ' + (e && e.message || e));
+      }
+
+      // Raycaster
+      raycaster = new THREE.Raycaster();
+      mouse = new THREE.Vector2();
+
+      // Resize handler
+      function onResize() {
+        const w = canvas.parentElement.clientWidth;
+        const h = canvas.parentElement.clientHeight;
+        renderer.setSize(w, h);
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
+      }
+      window.addEventListener('resize', onResize);
+      setTimeout(onResize, 30);
+
+      // 強制サイズ設定（flexで高さが取れていない場合の保険）
+      setTimeout(() => {
+        const w = Math.max(canvas.parentElement.clientWidth, 800);
+        const h = Math.max(canvas.parentElement.clientHeight, 600);
+        renderer.setSize(w, h);
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
+        renderer.render(scene, camera);
+      }, 100);
+
+      // Mouse interaction
+      setupMouseControls(canvas);
+
+      // 即時レンダ
+      renderer.render(scene, camera);
+      setTimeout(() => renderer.render(scene, camera), 200);
+    }
+
+    let isDragging = false;
+    let previousMouseX = 0;
+    let previousMouseY = 0;
+    let mouseDownPos = { x: 0, y: 0 };
+    let spherical = { theta: 2.6, phi: 0.85, radius: 42 };  // 中心が見える初期値
+    let viewCenter = new THREE.Vector3(-5, 0, -2); // 矢印キーなどでパンしたときの注視点（球面の中心を移動可能に）
+
+    function updateCameraFromSpherical() {
+      const { theta, phi, radius } = spherical;
+      const x = radius * Math.sin(phi) * Math.sin(theta);
+      const y = radius * Math.cos(phi);
+      const z = radius * Math.sin(phi) * Math.cos(theta);
+
+      camera.position.set(
+        viewCenter.x + x + 1,
+        viewCenter.y + y - 3,
+        viewCenter.z + z + 1
+      );
+      camera.lookAt(viewCenter.x, viewCenter.y, viewCenter.z);
+    }
+
+    function updateArrowKeyPan(delta) {
+      // カーソルキーでカメラを上下左右にパン（viewCenterを動かす）
+      if (!camera || !spherical || !viewCenter) return;
+
+      const hasArrow = keys['ArrowLeft'] || keys['Left'] || keys['ArrowRight'] || keys['Right'] ||
+                       keys['ArrowUp'] || keys['Up'] || keys['ArrowDown'] || keys['Down'];
+      if (!hasArrow) return;
+
+      const shift = keys['Shift'] || keys['ShiftLeft'] || keys['ShiftRight'];
+      const speedMul = shift ? 2.4 : 1.0;
+      const panSpeed = spherical.radius * 1.25 * speedMul * (delta || 0.016); // Shiftで高速パン
+
+      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion).setY(0).normalize();
+      const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion).normalize();
+
+      const deltaVec = new THREE.Vector3();
+
+      if (keys['ArrowLeft'] || keys['Left'])   deltaVec.addScaledVector(right, -panSpeed);
+      if (keys['ArrowRight'] || keys['Right']) deltaVec.addScaledVector(right,  panSpeed);
+      // 上下は遠近（forward/depth）ではなく、単純に全体を上下スクロール（viewの上下パン）
+      if (keys['ArrowUp'] || keys['Up'])       deltaVec.addScaledVector(up,  panSpeed);
+      if (keys['ArrowDown'] || keys['Down'])   deltaVec.addScaledVector(up, -panSpeed);
+
+      if (deltaVec.lengthSq() > 0.0001) {
+        viewCenter.add(deltaVec);
+        updateCameraFromSpherical();
+      }
+    }
+
+    function setupMouseControls(canvas) {
+      canvas.addEventListener('mousedown', (e) => {
+        isDragging = true;
+        previousMouseX = e.clientX;
+        previousMouseY = e.clientY;
+        mouseDownPos = { x: e.clientX, y: e.clientY };
+        if (e.button === 2) {
+          e.preventDefault();
+        }
+      });
+
+      window.addEventListener('mouseup', () => { isDragging = false; });
+
+      canvas.addEventListener('mousemove', (e) => {
+        if (!isDragging) {
+          // Hover detection
+          handleHover(e, canvas);
+          return;
+        }
+
+        const dx = e.clientX - previousMouseX;
+        const dy = e.clientY - previousMouseY;
+        previousMouseX = e.clientX;
+        previousMouseY = e.clientY;
+
+        if (e.buttons === 1) {
+          // left drag = rotate
+          spherical.theta -= dx * 0.0045;
+          spherical.phi -= dy * 0.0042;
+          spherical.phi = Math.max(0.15, Math.min(Math.PI - 0.15, spherical.phi));
+        } else if (e.buttons === 2) {
+          // right drag = pan （viewCenterを移動して球面モデルと整合させる）
+          e.preventDefault();
+          const panSpeed = spherical.radius * 0.0011;
+          const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion).setY(0).normalize();
+          const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion).setY(0).normalize();
+
+          const delta = new THREE.Vector3();
+          delta.addScaledVector(right, -dx * panSpeed);
+          delta.addScaledVector(forward, dy * panSpeed * 0.65);
+
+          viewCenter.add(delta);
+          updateCameraFromSpherical();
+          return;
+        }
+        updateCameraFromSpherical();
+      });
+
+      canvas.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        spherical.radius *= (e.deltaY > 0 ? 1.12 : 0.89);
+        spherical.radius = Math.max(12, Math.min(190, spherical.radius));
+        updateCameraFromSpherical();
+      }, { passive: false });
+
+      canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+      // Double click resets camera
+      canvas.addEventListener('dblclick', () => setCameraView('oblique'));
+
+      // 列車クリックで詳細ウィジェットを表示
+      canvas.addEventListener('click', (ev) => {
+        // ドラッグの後は選択しない
+        const dx = Math.abs(ev.clientX - mouseDownPos.x);
+        const dy = Math.abs(ev.clientY - mouseDownPos.y);
+        if (isDragging || dx > 7 || dy > 7) return;
+
+        const rect = canvas.getBoundingClientRect();
+        mouse.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+        mouse.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+        raycaster.setFromCamera(mouse, camera);
+
+        // 列車グループを優先的に探す
+        const hits = raycaster.intersectObjects(trainMeshes, true);
+        for (const h of hits) {
+          let ud = h.object.userData || (h.object.parent && h.object.parent.userData) || {};
+          const vid = ud.vehicleNumber;
+          if (vid && h.object.visible !== false) {
+            selectTrain(vid);
+            ev.stopPropagation();
+            return;
+          }
+        }
+        // 背景クリックで選択解除（任意）
+        // clearSelectedTrain();
+      });
+    }
+
+    function handleHover(e, canvas) {
+      const rect = canvas.getBoundingClientRect();
+      mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+      raycaster.setFromCamera(mouse, camera);
+      const intersects = raycaster.intersectObjects(scene.children, true);
+
+      const popup = document.getElementById('info-popup');
+      let found = false;
+
+      for (let int of intersects) {
+        const obj = int.object;
+        const ud = obj.userData || (obj.parent && obj.parent.userData) || {};
+        if (ud.type === 'train' && ud.lineKey) {
+          const line = LINES[ud.lineKey];
+          popup.innerHTML = `<span style="color:${line.color};font-weight:600">${line.abbr} ${line.name}</span><br><span class="text-white/60 text-[11px]">列車 走行中</span>`;
+          popup.style.left = (e.clientX + 14) + 'px';
+          popup.style.top = (e.clientY - 18) + 'px';
+          popup.classList.remove('hidden');
+          found = true;
+          break;
+        }
+        if (ud.type === 'station') {
+          popup.innerHTML = `<span class="font-semibold">${ud.name}</span> <span class="text-xs text-white/50">駅</span>`;
+          popup.style.left = (e.clientX + 14) + 'px';
+          popup.style.top = (e.clientY - 8) + 'px';
+          popup.classList.remove('hidden');
+          found = true;
+          break;
+        }
+      }
+
+      if (!found) popup.classList.add('hidden');
+    }
+
+    // ==================== 実データ + フォールバック ====================
+
+    function worldFromPixel(px, py) {
+      const SCALE = 0.085, OFFX = -22, OFFZ = -22;
+      return {
+        x: (px - 280) * SCALE + OFFX,
+        z: (py - 255) * SCALE + OFFZ
+      };
+    }
+
+    async function loadStationCoords() {
+      const candidates = [
+        `${PROXY_BASE}/api/stationCoords`,
+        'https://static.mobility-operation-info.emetro-app.osakametro.co.jp/emetro/cache/common/json/stationCoords.json'
+      ];
+      for (const url of candidates) {
+        try {
+          const res = await fetch(url);
+          if (!res.ok) continue;
+          const data = await res.json();
+          stationPosMap = {};
+          for (const s of (data.stationCoordsList || [])) {
+            const codes = s.stationNo.split(',');
+            const cx = (parseInt(s.coordsTopLeftX) + parseInt(s.coordsBottomRightX)) / 2;
+            const cy = (parseInt(s.coordsTopLeftY) + parseInt(s.coordsBottomRightY)) / 2;
+            const w = worldFromPixel(cx, cy);
+            for (const c of codes) {
+              const code = c.trim();
+              if (code && !stationPosMap[code]) stationPosMap[code] = { x: w.x, z: w.z, name: s.stationName };
+            }
+          }
+          console.log('[Osaka3D] stationPosMap loaded:', Object.keys(stationPosMap).length);
+
+          // LINE_DATA のポイント名から、APIで足りないコード（M06など）に座標を補完して線上に置けるようにする
+          try {
+            Object.keys(LINES).forEach(lk => {
+              const pts = LINES[lk].points || [];
+              pts.forEach(pt => {
+                if (!pt || !pt.name) return;
+                // 名前で逆引きして FIX コードに座標を付与（方向・位置フォールバック用）
+                if (pt.name === '江坂' && !stationPosMap['M06']) stationPosMap['M06'] = { x: pt.x, z: pt.z, name: '江坂' };
+                if (pt.name === '新大阪' && !stationPosMap['M07']) stationPosMap['M07'] = { x: pt.x, z: pt.z, name: '新大阪' };
+                if (pt.name === '西中島南方' && !stationPosMap['M09']) stationPosMap['M09'] = { x: pt.x, z: pt.z, name: '西中島南方' };
+                if (pt.name === '中津' && !stationPosMap['M10']) stationPosMap['M10'] = { x: pt.x, z: pt.z, name: '中津' };
+              });
+            });
+          } catch(e){}
+
+          injectSchematicStationPositions();
+          return;
+        } catch (e) {}
+      }
+      console.warn('[Osaka3D] using minimal fallback station map');
+      stationPosMap = {};
+      injectSchematicStationPositions();
+    }
+
+    // stationCode → schematic LINE point を注入（線上に置くため最優先）
+    // loadの成否に関わらず呼ぶ
+    function injectSchematicStationPositions() {
+      try {
+        Object.entries(STATION_CODE_NAME).forEach(([code, name]) => {
+          // 既に stationPosMap にあれば上書きして schematic 座標を強制（線に合わせる）
+          let placed = false;
+          Object.keys(LINES).forEach(lk => {
+            if (placed) return;
+            const p = (LINES[lk].points || []).find(pp => pp && pp.name === name);
+            if (p) {
+              stationPosMap[code] = { x: p.x, z: p.z, name };
+              placed = true;
+            }
+          });
+        });
+      } catch(e){}
+    }
+
+    function getApiUrl(routeCode) {
+      // Support PROXY_BASE='' (falsy but means "use relative proxy")
+      const useProxy = (PROXY_BASE != null);
+      if (useProxy) {
+        return `${PROXY_BASE}/api/trainlocation?route_code=${routeCode}`;
+      }
+      return `${DIRECT_API_BASE}/trainlocation?route_code=${routeCode}`;
+    }
+
+    async function fetchAllRealTrains() {
+      if (!USE_REAL_API) return;
+
+      const routeMap = ROUTE_CODE_MAP;
+
+      const promises = Object.entries(routeMap)
+        .filter(([lk]) => activeLines[lk])
+        .map(async ([lineKey, rc]) => {
+          try {
+            const opts = {};
+            const res = await fetch(getApiUrl(rc), opts);
+            if (!res.ok) throw res.status;
+            return { lineKey, data: await res.json() };
+          } catch (e) {
+            return { lineKey, error: e };
+          }
+        });
+
+      const results = await Promise.all(promises);
+      realTrains = {};
+      let count = 0;
+
+      for (const r of results) {
+        if (r.error || !r.data?.trainLocationList) continue;
+        for (const t of r.data.trainLocationList) {
+          const vid = t.vehicleNumber || `${r.lineKey}-${count}`;
+          realTrains[vid] = {
+            lineKey: r.lineKey,
+            fromCode: t.fromStationCode || '',
+            toCode: t.toStationCode || '',           // 即時次の駅（方向計算・位置補間に使用）。terminalは別
+            terminalCode: t.terminalStationCode || t.toStationCode || '',
+            progress: parseFloat(t.progress || 0),
+            updatedAt: Date.now()
+          };
+          count++;
+        }
+      }
+
+      usingRealData = count > 3;
+      lastRealFetch = Date.now();
+      fetchErrorCount = usingRealData ? 0 : fetchErrorCount + 1;
+
+      if (usingRealData && count > 0) {
+        // save snapshot for prediction fallback
+        lastKnownRealTrains = JSON.parse(JSON.stringify(realTrains));
+        lastFetchTime = Date.now();
+        isPredicting = false;
+      } else if (Object.keys(lastKnownRealTrains).length > 0) {
+        isPredicting = true;
+      }
+
+      updateDataBadge();
+    }
+
+    function updateDataBadge() {
+      const textEl = document.getElementById('data-badge-text');
+      const badge = document.getElementById('data-badge');
+      const help = document.getElementById('canvas-help');
+
+      if (isPredicting && Object.keys(lastKnownRealTrains).length > 0) {
+        const sec = Math.max(1, Math.floor((Date.now() - lastFetchTime) / 1000));
+        textEl.textContent = `API利用不可 - 過去データ予測中 (${sec}s前基準)`;
+        badge.style.background = 'rgba(239, 68, 68, 0.2)';
+        badge.style.color = '#ef4444';
+      } else if (usingRealData && lastRealFetch) {
+        const sec = Math.max(1, Math.floor((Date.now() - lastRealFetch) / 1000));
+        textEl.textContent = `実運行データ (${sec}s前)`;
+        badge.style.background = 'rgba(16,185,129,.12)';
+        badge.style.color = '#10b981';
+
+        if (help) {
+          help.innerHTML = 'ドラッグで回転　・　スクロールでズーム　・　右ドラッグでパン　・　カーソルキーで上下左右に移動';
+          setTimeout(() => { if (help) help.style.opacity = '0.4'; }, 4500);
+        }
+      } else {
+        textEl.textContent = '実データ取得中（デモ表示）';
+        badge.style.background = 'rgba(245,158,11,.15)';
+        badge.style.color = '#f59e0b';
+      }
+
+      // Show/hide prominent notice when predicting
+      const notice = document.getElementById('api-predict-notice');
+      if (notice) {
+        notice.classList.toggle('hidden', !isPredicting);
+      }
+    }
+
+    // 路線ポイントと完全に一致する位置を返すヘルパー（列車を線上に正確に乗せるため）
+    function resolveStationCode(lineKey, code) {
+      if (!code) return code;
+      const alias = STATION_ALIASES[code];
+      if (alias && (!lineKey || alias.lineKey === lineKey)) {
+        return alias.fallbackCode || code;
+      }
+      return code;
+    }
+
+    function resolveLinePoint(lineKey, code) {
+      if (!code || !lineKey || !LINES[lineKey]) return null;
+      const resolved = resolveStationCode(lineKey, code);
+      const pts = LINES[lineKey].points || [];
+      for (const p of pts) {
+        if (p && p.code === resolved) return p;
+      }
+      const st = stationPosMap[code] || stationPosMap[resolved];
+      let nm = st ? st.name : (STATION_ALIASES[code]?.name || STATION_NAME_FIX[code] || STATION_CODE_NAME[code] || code);
+      for (const p of pts) {
+        if (p && p.name === nm) return p;
+      }
+      const nml = (nm || '').replace(/[・･]/g, '');
+      for (const p of pts) {
+        if (p && p.name && p.name.replace(/[・･]/g, '') === nml) return p;
+      }
+      return null;
+    }
+
+    function getRealTrainPos(report) {
+      if (!report || !report.lineKey) {
+        const depth = LINE_DEPTH[report?.lineKey] || (-1.5 * DEPTH_SCALE);
+        return { x: 0, y: depth, z: 0 };
+      }
+      const depth = LINE_DEPTH[report.lineKey] || (-1.5 * DEPTH_SCALE);
+      let prog = (typeof report.progress === 'number' ? report.progress : parseFloat(report.progress || 0)) || 0;
+      prog = Math.max(0, Math.min(1, prog));
+
+      const fromPt = resolveLinePoint(report.lineKey, report.fromCode);
+      let toPt = resolveLinePoint(report.lineKey, report.toCode);
+      if (!toPt && report.terminalCode) {
+        toPt = resolveLinePoint(report.lineKey, report.terminalCode);
+      }
+
+      if (fromPt) {
+        if (!toPt || prog < 0.02) {
+          return { x: fromPt.x || 0, y: depth, z: fromPt.z || 0 };
+        }
+        if (prog > 0.98) {
+          return { x: toPt.x || 0, y: depth, z: toPt.z || 0 };
+        }
+        return {
+          x: fromPt.x * (1 - prog) + toPt.x * prog,
+          y: depth,
+          z: fromPt.z * (1 - prog) + toPt.z * prog
+        };
+      }
+
+      const schematic = getPositionOnLine(report.lineKey, prog);
+      if (schematic && typeof schematic.x === 'number') return schematic;
+      const linePts = (LINES[report.lineKey] && LINES[report.lineKey].points) || [];
+      const lp = linePts[Math.min(5, Math.max(0, Math.floor(linePts.length / 2)))];
+      return lp ? { x: lp.x || 0, y: depth, z: lp.z || 0 } : { x: 0, y: depth, z: 0 };
+    }
+
+    function updateRealTrains(trainData) {
+      if (!trainData) trainData = realTrains;
+      const entries = Object.keys(trainData);
+      ensureTrainMeshCapacity(entries.length);
+
+      const used = new Set();
+      let count = 0;
+
+      entries.forEach(vid => {
+        const rep = trainData[vid];
+        if (!activeLines[rep.lineKey]) return;
+
+        let mesh = trainMeshes.find(m => m.userData.vehicleNumber === vid);
+        if (!mesh) {
+          mesh = trainMeshes.find(m => !used.has(m));
+        }
+        if (!mesh) return;
+
+        used.add(mesh);
+        mesh.userData.vehicleNumber = vid;
+        mesh.userData.lineKey = rep.lineKey;
+
+        // 実際の車番・発着・経由（terminalCode を優先して「どこ行」を正しく）
+        const getName = (code) => {
+          if (!code) return '';
+          if (STATION_ALIASES[code]?.name) return STATION_ALIASES[code].name;
+          if (stationPosMap[code]?.name) return stationPosMap[code].name;
+          if (STATION_NAME_FIX[code]) return STATION_NAME_FIX[code];
+          if (STATION_CODE_NAME[code]) return STATION_CODE_NAME[code];
+          return code;
+        };
+        const fromName = getName(rep.fromCode);
+        const destCode = rep.terminalCode || rep.toCode || rep.fromCode || '';
+        const toName = getName(destCode);
+        const lineName = LINES[rep.lineKey]?.name || rep.lineKey || '';
+        mesh.userData.fromName = fromName;
+        mesh.userData.toName = toName;
+        mesh.userData.lineName = lineName;
+
+        const pos = getRealTrainPos(rep) || {x: 0, y: -1.5 * DEPTH_SCALE, z: 0};
+        const px = (pos && typeof pos.x === 'number') ? pos.x : 0;
+        const pz = (pos && typeof pos.z === 'number') ? pos.z : 0;
+        const trackY = (pos && typeof pos.y === 'number') ? pos.y : -1.5;
+        mesh.position.x = px;
+        mesh.position.y = trackY + TRAIN_Y_OFFSET;  // 線路上に置く
+        mesh.position.z = pz;
+        mesh.userData.baseY = trackY + TRAIN_Y_OFFSET;
+
+        // 列車は線の上に正しい方向を維持（描画ラインと同一の fromPt→toPt を使う）
+        let dirSet = false;
+        const fromPt = resolveLinePoint(rep.lineKey, rep.fromCode);
+        let toPt = resolveLinePoint(rep.lineKey, rep.toCode);
+        if (!toPt && rep.terminalCode) toPt = resolveLinePoint(rep.lineKey, rep.terminalCode);
+        const prog = Math.max(0, Math.min(1, parseFloat(rep.progress || 0) || 0));
+
+        if (fromPt && toPt) {
+          const step = Math.min(1.0, prog + 0.05);
+          const nx = fromPt.x * (1 - step) + toPt.x * step;
+          const nz = fromPt.z * (1 - step) + toPt.z * step;
+          const dx = nx - px;
+          const dz = nz - pz;
+          if (Math.abs(dx) > 0.0005 || Math.abs(dz) > 0.0005) {
+            mesh.rotation.y = Math.atan2(dx, dz) + Math.PI;
+            dirSet = true;
+          } else if (toPt.x !== fromPt.x || toPt.z !== fromPt.z) {
+            const dx2 = toPt.x - fromPt.x;
+            const dz2 = toPt.z - fromPt.z;
+            if (dx2 || dz2) {
+              mesh.rotation.y = Math.atan2(dx2, dz2) + Math.PI;
+              dirSet = true;
+            }
+          }
+        }
+
+        if (!dirSet) {
+          const termPt = resolveLinePoint(rep.lineKey, rep.terminalCode);
+          if (fromPt && termPt && (termPt.x !== fromPt.x || termPt.z !== fromPt.z)) {
+            const dx = termPt.x - fromPt.x;
+            const dz = termPt.z - fromPt.z;
+            if (dx || dz) {
+              mesh.rotation.y = Math.atan2(dx, dz) + Math.PI;
+              dirSet = true;
+            }
+          }
+        }
+
+        const body = mesh.children[0];
+        if (body?.children?.[0]) {
+          body.children[0].material.color.set(LINES[rep.lineKey].color);
+        }
+
+        mesh.visible = true;
+        count++;
+      });
+
+      // 余ったメッシュは隠す（ただし最低数は残して寂しくしない）
+      trainMeshes.forEach(m => {
+        if (!used.has(m)) m.visible = false;
+      });
+      document.getElementById('train-count').textContent = count;
+    }
+
+    // 旧シミュレーション（フォールバック）
+    function getPositionOnLine(lineKey, progress) {
+      const line = LINES[lineKey];
+      const depth = LINE_DEPTH[lineKey] || (-1.5 * DEPTH_SCALE);
+      if (!line) return { x: 0, y: depth, z: 0 };
+      const pts = (line.points || []).filter(p => p && typeof p.x === 'number' && typeof p.z === 'number');
+      if (pts.length < 2) return { x: 0, y: depth, z: 0 };
+      let p = Math.max(0, Math.min(1, progress || 0)) * (pts.length - 1);
+      const i = Math.max(0, Math.min(pts.length-1, Math.floor(p)));
+      const f = p - i;
+      let a = pts[i];
+      let b = pts[Math.min(i+1, pts.length-1)];
+      if (!a || typeof a.x !== 'number') a = {x:0, z:0};
+      if (!b || typeof b.x !== 'number') b = a;
+      const x = (a.x||0)*(1-f)+(b.x||0)*f;
+      const z = (a.z||0)*(1-f)+(b.z||0)*f;
+      return { x, y: depth, z };
+    }
+
+    function updateStationLabels() {
+      const container = document.getElementById('canvas-container');
+      if (!container || stationLabels.length === 0) return;
+      const rect = container.getBoundingClientRect();
+
+      stationLabels.forEach(item => {
+        const pos = item.position.clone().project(camera);
+        let x = (pos.x * 0.5 + 0.5) * rect.width;
+        let y = (-pos.y * 0.5 + 0.5) * rect.height;
+
+        // 常に表示（ユーザーリクエスト）
+        // 画面外でも端にクランプして常に見えるようにする
+        x = Math.max(8, Math.min(rect.width - 8, x));
+        y = Math.max(8, Math.min(rect.height - 8, y));
+
+        item.div.style.left = x + 'px';
+        item.div.style.top = y + 'px';
+        item.div.style.display = 'block';
+        item.div.style.opacity = '1';
+      });
+    }
+
+    function updateTrainLabels() {
+      const container = document.getElementById('canvas-container');
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      const labelsContainer = document.getElementById('train-labels');
+
+      // 現在アクティブな車両番号を収集
+      const activeVids = new Set();
+      trainMeshes.forEach(mesh => {
+        const vid = mesh.userData.vehicleNumber;
+        if (mesh.visible && vid) {
+          activeVids.add(vid);
+
+          // ラベルがなければ作成
+          let labelItem = trainLabels.find(l => l.vehicleNumber === vid);
+          if (!labelItem) {
+            const div = document.createElement('div');
+            div.className = 'train-label';
+            labelsContainer.appendChild(div);
+            labelItem = { div, vehicleNumber: vid };
+            trainLabels.push(labelItem);
+          }
+
+          // 実際の情報でテキスト更新（毎フレーム）：車番 + どこ発どこ行 + 経由
+          const from = mesh.userData.fromName || '';
+          const to = mesh.userData.toName || '';
+          const line = mesh.userData.lineName || '';
+          let labelText = vid;
+          if (from && to) labelText += ` ${from}→${to}行`;
+          else if (to) labelText += ` ${to}行`;
+          else if (from) labelText += ` ${from}`;
+          if (line) labelText += ` (${line})`;
+          labelItem.div.textContent = labelText;
+
+          // 位置更新
+          const pos = mesh.position.clone().project(camera);
+          let x = (pos.x * 0.5 + 0.5) * rect.width;
+          let y = (-pos.y * 0.5 + 0.5) * rect.height;
+
+          x = Math.max(5, Math.min(rect.width - 5, x));
+          y = Math.max(5, Math.min(rect.height - 5, y));
+
+          labelItem.div.style.left = x + 'px';
+          labelItem.div.style.top = y + 'px';
+          labelItem.div.style.display = 'block';
+          labelItem.div.style.opacity = '0.9';
+        }
+      });
+
+      // 非アクティブなラベルを隠す
+      trainLabels.forEach(item => {
+        if (!activeVids.has(item.vehicleNumber)) {
+          item.div.style.display = 'none';
+        }
+      });
+    }
+
+    function updateSimTimeDisplay() {
+      const el = document.getElementById('sim-time');
+      const spdEl = document.getElementById('speed-indicator');
+      const now = new Date();
+
+      // 常に本当の現在時刻を表示（リアルタイム感を最優先）
+      el.textContent = now.toLocaleTimeString('ja-JP', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+
+      if (isPredicting) {
+        spdEl.textContent = 'PREDICT (過去データ)';
+        spdEl.style.color = '#f59e0b';
+      } else if (usingRealData) {
+        spdEl.textContent = 'LIVE REAL DATA';
+        spdEl.style.color = '#10b981';
+      } else {
+        spdEl.textContent = isPaused ? 'PAUSED' : '実時間';
+        spdEl.style.color = isPaused ? '#f59e0b' : '#64748b';
+      }
+    }
+
+    let pollInterval = null;
+
+    function animate() {
+      requestAnimationFrame(animate);
+
+      const now = Date.now();
+      const delta = (now - lastFrameTime) / 1000;
+      lastFrameTime = now;
+
+      if (!isPaused) simTime += delta * simSpeed;
+
+      // カーソルキーによるパン（毎フレーム）
+      updateArrowKeyPan(delta);
+
+      let trainData = null;
+      if (usingRealData && Object.keys(realTrains).length > 2) {
+        trainData = realTrains;
+      } else if (isPredicting && Object.keys(lastKnownRealTrains).length > 0) {
+        // Advance last known real data using elapsed time for prediction
+        trainData = {};
+        const elapsed = (Date.now() - lastFetchTime) / 1000;
+        Object.keys(lastKnownRealTrains).forEach(vid => {
+          const rep = JSON.parse(JSON.stringify(lastKnownRealTrains[vid]));
+          const line = LINES[rep.lineKey];
+          if (line) {
+            const tripSec = line.traversalSec || 1200;
+            rep.progress = Math.min(1, (rep.progress || 0) + (elapsed / tripSec));
+            rep.updatedAt = Date.now();
+          }
+          trainData[vid] = rep;
+        });
+      }
+
+      if (trainData) {
+        updateRealTrains(trainData);
+      } else {
+        // デフォルト：seedDemoTrains で置いた列車を動かして常に何か表示
+        const lineKeys = Object.keys(LINES);
+        trainMeshes.forEach((t, i) => {
+          let lk = t.userData.lineKey;
+          if (!lk) lk = lineKeys[i % lineKeys.length];
+          t.userData.lineKey = lk;
+
+          if (!activeLines[lk]) {
+            t.visible = false;
+            return;
+          }
+
+          const spd = (lk === 'M' || lk === 'C') ? 17 : 26;
+          const p = ((simTime / spd) + (i % 17) * 0.09) % 1;
+          let pos = getPositionOnLine(lk, p) || {x:0, y: -1.5 * DEPTH_SCALE, z:0};
+          if (!pos || typeof pos.x !== 'number') pos = {x:0, y: -1.5 * DEPTH_SCALE, z:0};
+          const trackY = pos.y || -1.5;
+          t.position.x = pos.x || 0;
+          t.position.y = trackY + TRAIN_Y_OFFSET;  // 線路上に置く
+          t.position.z = pos.z || 0;
+          t.userData.baseY = trackY + TRAIN_Y_OFFSET;
+
+          let n = getPositionOnLine(lk, (p + 0.03) % 1) || {x:0, z:0};
+          if (!n || typeof n.x !== 'number') n = {x:0, z:0};
+          t.rotation.y = Math.atan2((n.x || 0) - (pos.x || 0), (n.z || 0) - (pos.z || 0)) + Math.PI; // nose at -Z
+          t.visible = true;
+        });
+
+        // カウントも更新
+        const vis = trainMeshes.filter(t => t.visible).length;
+        const cEl = document.getElementById('train-count');
+        if (cEl) cEl.textContent = vis;
+      }
+
+      updateSimTimeDisplay();
+      updateStationLabels();
+      updateTrainLabels();
+
+      // 軽い上下揺れ（線路上）
+      trainMeshes.forEach((t, i) => {
+        if (t.visible) {
+          const baseY = (t.userData && t.userData.baseY !== undefined) ? t.userData.baseY : (-1.5 * DEPTH_SCALE);
+          t.position.y = baseY + Math.sin(now / 280 + i) * 0.01;  // 小さく
+        }
+      });
+
+      renderer.render(scene, camera);
+    }
+
+    function startRealDataPolling() {
+      if (pollInterval) clearInterval(pollInterval);
+      fetchAllRealTrains(); // 初回
+      pollInterval = setInterval(() => {
+        if (!isPaused) fetchAllRealTrains();
+      }, 9500); // 約10秒ごと
+    }
+
+    // ==================== UI + CONTROLS ====================
+    function renderLineControls() {
+      const container = document.getElementById('line-controls');
+      container.innerHTML = '';
+
+      Object.keys(LINES).forEach(key => {
+        const line = LINES[key];
+        const row = document.createElement('div');
+        row.className = `line-row flex items-center gap-x-2.5 px-2 py-1.5 rounded cursor-pointer ${activeLines[key] ? '' : 'opacity-60'}`;
+        
+        row.innerHTML = `
+          <div class="w-3.5 h-3.5 rounded flex-shrink-0" style="background:${line.color}"></div>
+          <div class="flex-1 text-sm font-medium">${line.name}</div>
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" ${activeLines[key] ? 'checked' : ''} class="sr-only peer">
+            <div class="w-8 h-4 bg-white/20 rounded-full peer peer-checked:bg-emerald-500 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[1px] after:left-[1px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all"></div>
+          </label>
+        `;
+
+        const checkbox = row.querySelector('input');
+        checkbox.onchange = (ev) => {
+          activeLines[key] = ev.target.checked;
+          if (lineMeshes[key]) {
+            lineMeshes[key].group.visible = activeLines[key];
+          }
+          row.style.opacity = activeLines[key] ? '1' : '0.6';
+          syncLineTrainsVisibility(key);
+          ev.stopImmediatePropagation();
+        };
+
+        row.onclick = (e) => {
+          if (e.target.tagName === 'INPUT') return;
+          activeLines[key] = !activeLines[key];
+          checkbox.checked = activeLines[key];
+          if (lineMeshes[key]) lineMeshes[key].group.visible = activeLines[key];
+          row.style.opacity = activeLines[key] ? '1' : '0.6';
+          // 列車も即時反映 + カウント更新（反応を良くする）
+          syncLineTrainsVisibility(key);
+        };
+
+        container.appendChild(row);
+      });
+    }
+
+    // 路線の表示/非表示を即時に列車にも反映（トグル反応を良くする）
+    function syncLineTrainsVisibility(changedKey) {
+      trainMeshes.forEach(m => {
+        if (!m.userData) return;
+        if (m.userData.lineKey === changedKey) {
+          m.visible = !!activeLines[changedKey];
+        }
+      });
+      updateVisibleTrainCount();
+    }
+
+    function updateVisibleTrainCount() {
+      const el = document.getElementById('train-count');
+      if (!el) return;
+      const cnt = trainMeshes.filter(t => t.visible && t.userData && t.userData.vehicleNumber).length;
+      el.textContent = cnt;
+    }
+
+    // ===== 列車クリック → ウィジェット表示 =====
+    let selectedVid = null;
+
+    function selectTrain(vid) {
+      if (!vid) return;
+      selectedVid = vid;
+
+      const panel = document.getElementById('selected-train-panel');
+      const body = document.getElementById('selected-train-body');
+      const tt = document.getElementById('selected-train-timetable');
+      if (!panel || !body) return;
+
+      const mesh = trainMeshes.find(m => m.userData && m.userData.vehicleNumber === vid);
+      const rep = realTrains[vid] || lastKnownRealTrains[vid] || {};
+      const ud = mesh ? mesh.userData : {};
+
+      const v = vid;
+      const from = ud.fromName || rep.fromCode || '';
+      const to = ud.toName || rep.toCode || '';
+      const line = ud.lineName || (rep.lineKey ? (LINES[rep.lineKey]?.name || rep.lineKey) : '');
+      const lineColor = (rep.lineKey && LINES[rep.lineKey]) ? LINES[rep.lineKey].color : '#888';
+
+      body.innerHTML = `
+        <div><span class="font-mono text-[#00c8ff]">${v}</span> <span class="text-white/60">${line}</span></div>
+        <div class="text-sm">${from} → ${to}行</div>
+      `;
+
+      // 簡単な予想時刻表（ラインのポイントを辿って次の駅をリスト）
+      const upcoming = getUpcomingStations(rep.lineKey || ud.lineKey, from, to || ud.toName);
+      let html = '';
+      const now = new Date();
+      upcoming.forEach((st, i) => {
+        const min = 2 + i * 2 + Math.floor(Math.random()*1);
+        const t = new Date(now.getTime() + min * 60000);
+        html += `<div class="flex justify-between"><span>${st}</span><span class="font-mono text-white/50">${t.getHours()}:${String(t.getMinutes()).padStart(2,'0')}</span></div>`;
+      });
+      if (tt) tt.innerHTML = html || '<span class="text-white/40">情報なし</span>';
+
+      panel.classList.remove('hidden');
+
+      // ちょっと目立たせる
+      if (mesh) {
+        mesh.scale.set(1.15, 1.15, 1.15);
+        setTimeout(() => { if (mesh && mesh.scale) mesh.scale.set(1,1,1); }, 280);
+      }
+
+      // 隠れている路線なら自動でオンにする（クリックしたのに見えないのを防ぐ）
+      const lk = rep.lineKey || ud.lineKey;
+      if (lk && !activeLines[lk]) {
+        activeLines[lk] = true;
+        if (lineMeshes[lk]) lineMeshes[lk].group.visible = true;
+        renderLineControls();
+      }
+    }
+
+    function clearSelectedTrain() {
+      selectedVid = null;
+      const panel = document.getElementById('selected-train-panel');
+      if (panel) panel.classList.add('hidden');
+    }
+
+    function getUpcomingStations(lineKey, fromName, toName) {
+      const pts = (LINES[lineKey] && LINES[lineKey].points) || [];
+      if (!pts.length || !fromName) return [];
+      let idx = -1;
+      for (let i = 0; i < pts.length; i++) {
+        if (pts[i].name === fromName) { idx = i; break; }
+      }
+      if (idx < 0) idx = 0;
+
+      // 進行方向を推定
+      let dir = 1;
+      if (toName) {
+        for (let i = 0; i < pts.length; i++) {
+          if (pts[i].name === toName && i !== idx) {
+            dir = i > idx ? 1 : -1;
+            break;
+          }
+        }
+      }
+      const out = [];
+      for (let k = 1; k <= 4; k++) {
+        const j = idx + dir * k;
+        if (j < 0 || j >= pts.length) break;
+        out.push(pts[j].name);
+      }
+      return out;
+    }
+
+    function togglePause() {
+      isPaused = !isPaused;
+      const icon = document.getElementById('pause-icon');
+      const txt = document.getElementById('pause-text');
+      
+      if (isPaused) {
+        pausedSimTime = simTime;
+        icon.textContent = '▶';
+        txt.textContent = '再開';
+      } else {
+        icon.textContent = '⏸';
+        txt.textContent = '一時停止';
+        lastFrameTime = Date.now();
+      }
+    }
+
+    function resetSimulation() {
+      simTime = 7 * 3600 + Math.random() * 1200;
+      isPaused = false;
+      document.getElementById('pause-icon').textContent = '⏸';
+      document.getElementById('pause-text').textContent = '一時停止';
+      lastFrameTime = Date.now();
+    }
+
+    function setCameraView(mode, instant = false) {
+      // プリセット時は注視点をリセット（矢印パン後の状態をクリアしたい場合に）
+      viewCenter.set(-5, 0, -2);
+      if (mode === 'top') {
+        spherical.theta = 0.01;
+        spherical.phi = 0.18;
+        spherical.radius = 72;
+      } else if (mode === 'side') {
+        spherical.theta = 4.6;
+        spherical.phi = 1.48;
+        spherical.radius = 55;
+      } else { // oblique — 地下鉄の広がりがよく見えるアングル
+        spherical.theta = 2.75;
+        spherical.phi = 0.95;
+        spherical.radius = 48;
+      }
+      updateCameraFromSpherical();
+    }
+
+    function toggleAllLines(show) {
+      Object.keys(activeLines).forEach(k => {
+        activeLines[k] = show;
+        if (lineMeshes[k]) lineMeshes[k].group.visible = show;
+      });
+      // 列車も全即時反映
+      trainMeshes.forEach(m => {
+        if (m.userData && m.userData.lineKey) {
+          m.visible = !!activeLines[m.userData.lineKey];
+        }
+      });
+      updateVisibleTrainCount();
+      renderLineControls();
+    }
+
+    function showAbout() {
+      const msg = '大阪メトロ リアルタイム3Dマップ\n\n' +
+        '大阪メトロ公式アプリが使用している運行情報APIから実際の列車位置データを取得して表示しています。\n\n' +
+        '・約10秒ごとに位置を更新\n' +
+        '・プロキシ経由（server.py）でCORSを回避して取得\n' +
+        '・APIが利用できない場合はシミュレーションにフォールバック';
+      alert(msg);
+    }
+
+    // Assign initial train line assignments
+    function assignTrains() {
+      const lineKeys = Object.keys(LINES);
+      trainMeshes.forEach((train, index) => {
+        const lineKey = lineKeys[index % lineKeys.length];
+        train.userData.lineKey = lineKey;
+        // Spread trains more naturally
+        train.userData.progress = ((index * 0.11) + (index % 3) * 0.3) % 1;
+        train.userData.dir = (index % 2 === 0) ? 1 : -1;
+      });
+    }
+
+    async function initRealData() {
+      await loadStationCoords();
+
+      if (USE_REAL_API) {
+        startRealDataPolling();
+        // すぐに1回叩く（黒画面を早く脱出）
+        setTimeout(() => {
+          fetchAllRealTrains().then(() => updateDataBadge());
+        }, 700);
+
+        setTimeout(() => {
+          if (!usingRealData || Object.keys(realTrains || {}).length < 3) {
+            usingRealData = false;
+            if (Object.keys(lastKnownRealTrains).length > 0) {
+              isPredicting = true;
+            }
+            updateDataBadge();
+          }
+        }, 28000);
+      }
+    }
+
+    async function initEverything() {
+      try {
+        initTailwind();
+        await loadStationCoords();
+        await buildLinesFromOfficialData();
+        Object.keys(LINES).forEach(k => { activeLines[k] = true; });
+        initThree();
+        renderLineControls();
+
+        initRealData();
+
+        lastFrameTime = Date.now();
+        try {
+          animate();
+        } catch (e) {
+          console.error('[animate first call] failed', e);
+          throw new Error('in initial animate: ' + (e && e.message || e));
+        }
+
+        setTimeout(updateSimTimeDisplay, 50);
+        setTimeout(updateSimTimeDisplay, 300);
+
+        setTimeout(() => {
+          setCameraView('oblique', true);
+          renderer.render(scene, camera);
+        }, 120);
+
+        document.addEventListener('keydown', (e) => {
+          keys[e.key] = true;
+          if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Left', 'Right', 'Up', 'Down'].indexOf(e.key) !== -1) {
+            e.preventDefault();
+          }
+          if (e.key === ' ') { e.preventDefault(); togglePause(); }
+          if (e.key.toLowerCase() === 'r') { resetSimulation(); fetchAllRealTrains(); }
+          if (e.key.toLowerCase() === 't') setCameraView('top');
+        });
+
+        document.addEventListener('keyup', (e) => {
+          keys[e.key] = false;
+        });
+
+        window.addEventListener('blur', () => {
+          Object.keys(keys).forEach(k => keys[k] = false);
+        });
+
+        console.log('%c[Osaka Metro 3D] v1.1.0 実データ版を起動しました', 'color:#10b981');
+      } catch (err) {
+        console.error('initEverything failed', err);
+        const banner = document.createElement('div');
+        banner.style.cssText = 'position:fixed;top:120px;left:10px;right:10px;background:#b91c1c;color:white;padding:12px;z-index:99999;font-size:13px';
+        banner.textContent = '初期化エラー: ' + err.message;
+        document.body.appendChild(banner);
+      }
+    }
+
+    // Boot
+    window.onload = () => initEverything();
+  </script>
+</body>
+</html>
