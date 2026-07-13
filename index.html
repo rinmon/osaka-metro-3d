@@ -117,7 +117,7 @@
           <span class="text-white text-lg font-bold tracking-tighter">M</span>
         </div>
         <div>
-          <div class="font-semibold tracking-tight text-lg">大阪メトロ 3D <span style="font-size:9px;opacity:0.5">v1.1.1</span></div>
+          <div class="font-semibold tracking-tight text-lg">大阪メトロ 3D <span style="font-size:9px;opacity:0.5">v1.2.0</span></div>
           <div class="text-[10px] text-white/50 -mt-0.5">REAL-TIME UNDERGROUND MAP</div>
         </div>
       </div>
@@ -590,8 +590,12 @@
     // === 実データ関連 ===
     const USE_REAL_API = true;
 
-    // server.py (localhost:8123) も Vercel も apl.chotto.news も同一オリジン相対パスで /api/* にプロキシ
-    const PROXY_BASE = '';
+    // server.py ローカルは '' → /api/*
+    // apl.chotto.news は /tools/osaka-metro-3d/api/* （サブパス）
+    const PROXY_BASE = (() => {
+      const m = location.pathname.match(/^(.*\/tools\/osaka-metro-3d)(?:\/|$)/);
+      return m ? m[1] : '';
+    })();
 
     let stationPosMap = {};      // stationCode -> {x, z, name}
 

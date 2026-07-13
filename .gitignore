@@ -6,3 +6,4 @@ __pycache__/
 
 # Grok/Cursor handoff notes (optional local)
 .cursor-exchange/
+.env*
