@@ -117,7 +117,7 @@
           <span class="text-white text-lg font-bold tracking-tighter">M</span>
         </div>
         <div>
-          <div class="font-semibold tracking-tight text-lg">大阪メトロ 3D <span style="font-size:9px;opacity:0.5">v1.1.0</span></div>
+          <div class="font-semibold tracking-tight text-lg">大阪メトロ 3D <span style="font-size:9px;opacity:0.5">v1.1.1</span></div>
           <div class="text-[10px] text-white/50 -mt-0.5">REAL-TIME UNDERGROUND MAP</div>
         </div>
       </div>
@@ -595,21 +595,31 @@
 
     let stationPosMap = {};      // stationCode -> {x, z, name}
 
-    // 他社線直通など schematic に無いコード → 路線上の代表駅へフォールバック
+    // 他社線直通・延伸区間など Metro schematic 外コード → 路線上の代表駅へフォールバック
+    // M06–M10: 北大阪急行（江坂以北）。C24+ / C30: 中央線延伸側。HK*: 阪堺線直通。
     const STATION_ALIASES = {
-      HK95: { lineKey: 'K', name: '天下茶屋', fallbackCode: 'K20' },
-      HK72: { lineKey: 'K', name: '天下茶屋', fallbackCode: 'K20' }
+      M06: { lineKey: 'M', name: '江坂', fallbackCode: 'M11' },
+      M07: { lineKey: 'M', name: '江坂', fallbackCode: 'M11' },
+      M08: { lineKey: 'M', name: '江坂', fallbackCode: 'M11' },
+      M09: { lineKey: 'M', name: '江坂', fallbackCode: 'M11' },
+      M10: { lineKey: 'M', name: '江坂', fallbackCode: 'M11' },
+      C24: { lineKey: 'C', name: '長田', fallbackCode: 'C23' },
+      C25: { lineKey: 'C', name: '長田', fallbackCode: 'C23' },
+      C26: { lineKey: 'C', name: '長田', fallbackCode: 'C23' },
+      C27: { lineKey: 'C', name: '長田', fallbackCode: 'C23' },
+      C28: { lineKey: 'C', name: '長田', fallbackCode: 'C23' },
+      C29: { lineKey: 'C', name: '長田', fallbackCode: 'C23' },
+      C30: { lineKey: 'C', name: '長田', fallbackCode: 'C23' },
+      HK66: { lineKey: 'K', name: '天下茶屋', fallbackCode: 'K20' },
+      HK72: { lineKey: 'K', name: '天下茶屋', fallbackCode: 'K20' },
+      HK86: { lineKey: 'K', name: '天下茶屋', fallbackCode: 'K20' },
+      HK95: { lineKey: 'K', name: '天下茶屋', fallbackCode: 'K20' }
     };
 
     // 列車APIのvehicle locationで使われる一部コードが stationCoords.json に無いため補完
     // 実車番表示 + 発着表示を正しくするためのフォールバック（名前解決のみ）
-    const STATION_NAME_FIX = {
-      'M06': '江坂',
-      'M07': '新大阪',
-      'M09': '西中島南方',
-      'M10': '中津'
-      // 必要に応じて追加。Mxx の多くは stationCoords で解決済み
-    };
+    // 旧コード互換。北急区間は STATION_ALIASES を優先
+    const STATION_NAME_FIX = {};
 
     // APIが返す stationCode → 日本語駅名（API構築前の最小フォールバック）
     const STATION_CODE_NAME = {};
@@ -773,7 +783,8 @@
 
     function createTrains() {
       trainMeshes = [];
-      for (let i = 0; i < 120; i++) createSingleTrainMesh();
+      // ピーク時 130+ 両。ensureTrainMeshCapacity で動的拡張するが初期余裕を確保
+      for (let i = 0; i < 160; i++) createSingleTrainMesh();
     }
 
     function seedDemoTrains() {

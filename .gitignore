@@ -3,3 +3,6 @@
 .env.local
 __pycache__/
 .DS_Store
+
+# Grok/Cursor handoff notes (optional local)
+.cursor-exchange/
