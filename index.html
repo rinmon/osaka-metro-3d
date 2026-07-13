@@ -117,7 +117,7 @@
           <span class="text-white text-lg font-bold tracking-tighter">M</span>
         </div>
         <div>
-          <div class="font-semibold tracking-tight text-lg">大阪メトロ 3D <span style="font-size:9px;opacity:0.5">v1.2.0</span></div>
+          <div class="font-semibold tracking-tight text-lg">大阪メトロ 3D <span style="font-size:9px;opacity:0.5">v1.3.0</span></div>
           <div class="text-[10px] text-white/50 -mt-0.5">REAL-TIME UNDERGROUND MAP</div>
         </div>
       </div>
@@ -163,6 +163,10 @@
           </div>
           <div class="text-white/40">|</div>
           <div class="text-emerald-400 text-[10px]">LIVE DATA</div>
+        </div>
+        <div id="map-legend" class="mt-1.5 pt-1.5 border-t border-white/10 text-[10px] text-white/70 flex items-center gap-x-3">
+          <span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#94a3b8;vertical-align:middle;margin-right:4px"></span>駅</span>
+          <span><span style="display:inline-block;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:9px solid #00c8ff;vertical-align:middle;margin-right:4px;transform:rotate(-90deg)"></span>列車（三角＝進行方向）</span>
         </div>
       </div>
 
@@ -690,6 +694,13 @@
     function createStations() {
       stationMeshes = [];
       const seen = new Set();
+      // 広域ズーム時に残す主要駅
+      const MAJOR_STATIONS = new Set([
+        '江坂', '新大阪', '梅田', '東梅田', '西梅田', '本町', '堺筋本町',
+        '心斎橋', 'なんば', '天王寺', '動物園前', 'なかもず', '森ノ宮',
+        '京橋', '谷町九丁目', '夢洲', 'コスモスクエア', '門真南',
+        '天下茶屋', '住之江公園', '大日', '八尾南', '井高野', '今里'
+      ]);
 
       Object.keys(LINES).forEach(key => {
         try {
@@ -699,42 +710,43 @@
             return;
           }
           const safePts = (line.points || []).filter(p => p && typeof p.x === 'number' && typeof p.z === 'number');
-          safePts.forEach((pt, idx) => {
+          safePts.forEach((pt) => {
             if (!pt) return;
             const keyId = pt.name;
-            if (seen.has(keyId)) return; // avoid heavy dupes
+            if (seen.has(keyId)) return;
             seen.add(keyId);
 
-            // 簡略化した駅マーカー（円柱をボックスに）
             const depth = LINE_DEPTH[key] || (-1.5 * DEPTH_SCALE);
-            const stationY = depth;  // 線と同じ高さに置いて接続（浮かないように）
-            const marker = new THREE.Mesh(
-              new THREE.BoxGeometry(0.7, 0.25, 0.7),
+            const stationY = depth;
+            const lineColor = new THREE.Color(line.color);
+
+            // 駅 = 小さい円盤（箱にしない）+ 路線色リング
+            const disk = new THREE.Mesh(
+              new THREE.CylinderGeometry(0.28, 0.28, 0.08, 16),
               new THREE.MeshPhongMaterial({
-                color: 0x334155,
-                emissive: 0x1e2937,
-                emissiveIntensity: 0.3
+                color: 0xe2e8f0,
+                emissive: 0x64748b,
+                emissiveIntensity: 0.25
               })
             );
-            marker.position.set(pt.x, stationY, pt.z);
-            marker.userData = { type: 'station', name: pt.name, lines: [key] };
-            scene.add(marker);
-            stationMeshes.push(marker);
+            disk.position.set(pt.x, stationY + 0.04, pt.z);
+            disk.userData = { type: 'station', name: pt.name, lines: [key], major: MAJOR_STATIONS.has(pt.name) };
+            scene.add(disk);
+            stationMeshes.push(disk);
 
-            // 簡略化したトップマーカー（小さいボックスでラインカラー）
-            const topMarker = new THREE.Mesh(
-              new THREE.BoxGeometry(0.5, 0.12, 0.5),
-              new THREE.MeshPhongMaterial({ 
-                color: line.color, 
-                emissive: line.color, 
-                emissiveIntensity: 0.4 
+            const ring = new THREE.Mesh(
+              new THREE.TorusGeometry(0.38, 0.045, 8, 24),
+              new THREE.MeshPhongMaterial({
+                color: lineColor,
+                emissive: lineColor,
+                emissiveIntensity: 0.55
               })
             );
-            topMarker.position.set(pt.x, stationY + 0.3, pt.z);
-            topMarker.userData = { type: 'stationTop' };
-            scene.add(topMarker);
+            ring.rotation.x = Math.PI / 2;
+            ring.position.set(pt.x, stationY + 0.1, pt.z);
+            ring.userData = { type: 'stationTop' };
+            scene.add(ring);
 
-            // 駅名ラベル（HTML overlayで浮き出し表示）
             const labelsContainer = document.getElementById('station-labels');
             if (labelsContainer) {
               const labelDiv = document.createElement('div');
@@ -743,7 +755,9 @@
               labelsContainer.appendChild(labelDiv);
               stationLabels.push({
                 div: labelDiv,
-                position: new THREE.Vector3(pt.x, stationY + 1.2, pt.z)  // 駅の上に浮き出させる
+                position: new THREE.Vector3(pt.x, stationY + 1.0, pt.z),
+                major: MAJOR_STATIONS.has(pt.name),
+                name: pt.name
               });
             }
           });
@@ -754,25 +768,43 @@
     }
 
     function createSingleTrainMesh() {
+      // 車体（路線色で塗る）— 細長い直方体
       const body = new THREE.Mesh(
-        new THREE.BoxGeometry(0.5, 0.35, 1.0),
-        new THREE.MeshPhongMaterial({ color: 0x334155, emissive: 0x1e2937 })
+        new THREE.BoxGeometry(0.42, 0.28, 1.05),
+        new THREE.MeshPhongMaterial({
+          color: 0x64748b,
+          emissive: 0x1e2937,
+          emissiveIntensity: 0.35
+        })
       );
-      body.position.y = -0.05;
+      body.position.y = 0.02;
+      body.name = 'trainBody';
 
-      const front = new THREE.Mesh(
-        new THREE.BoxGeometry(0.55, 0.3, 0.2),
-        new THREE.MeshPhongMaterial({ color: 0x3b82f6, emissive: 0x1e40af })
+      // 先頭コーン（ローカル -Z = 進行方向）。形で向きが分かる
+      const nose = new THREE.Mesh(
+        new THREE.ConeGeometry(0.26, 0.55, 5),
+        new THREE.MeshPhongMaterial({
+          color: 0xffffff,
+          emissive: 0xffffff,
+          emissiveIntensity: 0.65
+        })
       );
-      front.position.z = -0.7;
-      front.position.y = -0.05;
-      body.add(front);
+      nose.rotation.x = -Math.PI / 2; // tip → -Z
+      nose.position.set(0, 0.02, -0.78);
+      nose.name = 'trainNose';
 
       const trainGroup = new THREE.Group();
       trainGroup.add(body);
+      trainGroup.add(nose);
       trainGroup.visible = false;
       trainGroup.userData = {
-        type: 'train', lineKey: null, dir: 1, progress: 0, vehicleNumber: null
+        type: 'train',
+        lineKey: null,
+        dir: 1,
+        progress: 0,
+        vehicleNumber: null,
+        body,
+        nose
       };
       scene.add(trainGroup);
       trainMeshes.push(trainGroup);
@@ -822,6 +854,16 @@
           const dz = (next.z || 0) - (pos.z || 0);
           // Model front is at negative local Z, so add PI to point nose in travel direction
           train.rotation.y = Math.atan2(dx, dz) + Math.PI;
+        }
+        const lc = LINES[lk]?.color || '#64748b';
+        if (train.userData.body?.material) {
+          train.userData.body.material.color.set(lc);
+          train.userData.body.material.emissive.set(lc);
+        }
+        if (train.userData.nose?.material) {
+          train.userData.nose.material.color.set(lc);
+          train.userData.nose.material.emissive.set(lc);
+          train.userData.nose.material.emissiveIntensity = 0.85;
         }
         train.visible = true;
       });
@@ -1505,9 +1547,18 @@
           }
         }
 
-        const body = mesh.children[0];
-        if (body?.children?.[0]) {
-          body.children[0].material.color.set(LINES[rep.lineKey].color);
+        const lineColor = LINES[rep.lineKey]?.color || '#64748b';
+        const body = mesh.userData.body || mesh.children.find(c => c.name === 'trainBody');
+        const nose = mesh.userData.nose || mesh.children.find(c => c.name === 'trainNose');
+        if (body?.material) {
+          body.material.color.set(lineColor);
+          body.material.emissive.set(lineColor);
+          body.material.emissiveIntensity = 0.35;
+        }
+        if (nose?.material) {
+          nose.material.color.set(lineColor);
+          nose.material.emissive.set(lineColor);
+          nose.material.emissiveIntensity = 0.85;
         }
 
         mesh.visible = true;
@@ -1540,25 +1591,37 @@
       return { x, y: depth, z };
     }
 
+    function labelLodLevel() {
+      // spherical.radius: 近いほど小。広域でラベルを間引く
+      const r = (spherical && spherical.radius) || 48;
+      if (r >= 72) return 'far';
+      if (r >= 38) return 'mid';
+      return 'near';
+    }
+
+    function isProjectedInView(ndc, margin = 1.08) {
+      return ndc.z < 1 && Math.abs(ndc.x) <= margin && Math.abs(ndc.y) <= margin;
+    }
+
     function updateStationLabels() {
       const container = document.getElementById('canvas-container');
       if (!container || stationLabels.length === 0) return;
       const rect = container.getBoundingClientRect();
+      const lod = labelLodLevel();
 
       stationLabels.forEach(item => {
         const pos = item.position.clone().project(camera);
-        let x = (pos.x * 0.5 + 0.5) * rect.width;
-        let y = (-pos.y * 0.5 + 0.5) * rect.height;
+        if (!isProjectedInView(pos) || (lod === 'far' && !item.major)) {
+          item.div.style.display = 'none';
+          return;
+        }
 
-        // 常に表示（ユーザーリクエスト）
-        // 画面外でも端にクランプして常に見えるようにする
-        x = Math.max(8, Math.min(rect.width - 8, x));
-        y = Math.max(8, Math.min(rect.height - 8, y));
-
+        const x = (pos.x * 0.5 + 0.5) * rect.width;
+        const y = (-pos.y * 0.5 + 0.5) * rect.height;
         item.div.style.left = x + 'px';
         item.div.style.top = y + 'px';
         item.div.style.display = 'block';
-        item.div.style.opacity = '1';
+        item.div.style.opacity = lod === 'far' ? '0.75' : '1';
       });
     }
 
@@ -1567,51 +1630,54 @@
       if (!container) return;
       const rect = container.getBoundingClientRect();
       const labelsContainer = document.getElementById('train-labels');
-
-      // 現在アクティブな車両番号を収集
+      const lod = labelLodLevel();
       const activeVids = new Set();
+
+      // 広域では列車ラベルを出さない（記号＋凡例で十分）
+      if (lod === 'far') {
+        trainLabels.forEach(item => { item.div.style.display = 'none'; });
+        return;
+      }
+
       trainMeshes.forEach(mesh => {
         const vid = mesh.userData.vehicleNumber;
-        if (mesh.visible && vid) {
-          activeVids.add(vid);
+        if (!mesh.visible || !vid) return;
 
-          // ラベルがなければ作成
-          let labelItem = trainLabels.find(l => l.vehicleNumber === vid);
-          if (!labelItem) {
-            const div = document.createElement('div');
-            div.className = 'train-label';
-            labelsContainer.appendChild(div);
-            labelItem = { div, vehicleNumber: vid };
-            trainLabels.push(labelItem);
-          }
+        const pos = mesh.position.clone().project(camera);
+        if (!isProjectedInView(pos)) return;
 
-          // 実際の情報でテキスト更新（毎フレーム）：車番 + どこ発どこ行 + 経由
-          const from = mesh.userData.fromName || '';
-          const to = mesh.userData.toName || '';
-          const line = mesh.userData.lineName || '';
-          let labelText = vid;
+        activeVids.add(vid);
+        let labelItem = trainLabels.find(l => l.vehicleNumber === vid);
+        if (!labelItem) {
+          const div = document.createElement('div');
+          div.className = 'train-label';
+          labelsContainer.appendChild(div);
+          labelItem = { div, vehicleNumber: vid };
+          trainLabels.push(labelItem);
+        }
+
+        const from = mesh.userData.fromName || '';
+        const to = mesh.userData.toName || '';
+        let labelText;
+        if (lod === 'mid') {
+          labelText = to ? `${to}行` : vid;
+        } else if (selectedVid && selectedVid === vid) {
+          labelText = vid;
           if (from && to) labelText += ` ${from}→${to}行`;
           else if (to) labelText += ` ${to}行`;
-          else if (from) labelText += ` ${from}`;
-          if (line) labelText += ` (${line})`;
-          labelItem.div.textContent = labelText;
-
-          // 位置更新
-          const pos = mesh.position.clone().project(camera);
-          let x = (pos.x * 0.5 + 0.5) * rect.width;
-          let y = (-pos.y * 0.5 + 0.5) * rect.height;
-
-          x = Math.max(5, Math.min(rect.width - 5, x));
-          y = Math.max(5, Math.min(rect.height - 5, y));
-
-          labelItem.div.style.left = x + 'px';
-          labelItem.div.style.top = y + 'px';
-          labelItem.div.style.display = 'block';
-          labelItem.div.style.opacity = '0.9';
+        } else {
+          labelText = to ? `${vid} ${to}行` : vid;
         }
+        labelItem.div.textContent = labelText;
+
+        const x = (pos.x * 0.5 + 0.5) * rect.width;
+        const y = (-pos.y * 0.5 + 0.5) * rect.height;
+        labelItem.div.style.left = x + 'px';
+        labelItem.div.style.top = y + 'px';
+        labelItem.div.style.display = 'block';
+        labelItem.div.style.opacity = lod === 'mid' ? '0.75' : '0.9';
       });
 
-      // 非アクティブなラベルを隠す
       trainLabels.forEach(item => {
         if (!activeVids.has(item.vehicleNumber)) {
           item.div.style.display = 'none';
@@ -2029,7 +2095,7 @@
           Object.keys(keys).forEach(k => keys[k] = false);
         });
 
-        console.log('%c[Osaka Metro 3D] v1.1.0 実データ版を起動しました', 'color:#10b981');
+        console.log('%c[Osaka Metro 3D] v1.3.0 UX closeout', 'color:#10b981');
       } catch (err) {
         console.error('initEverything failed', err);
         const banner = document.createElement('div');
